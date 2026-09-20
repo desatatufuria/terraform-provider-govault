@@ -77,8 +77,11 @@ material without exposing secrets in the repository or command output.
 - Work-unit commit: `a793ff8` (`docs(odd): record provider release signing
   setup`). RDD classified it passive (`non_executable_only`), so no review was
   due.
+- The user confirmed external custody of the fingerprint, passphrase, and
+  encrypted private-key backup, and explicitly chose to retain the protected
+  local copies because this is a laboratory environment.
 
 ## Next step
 
-Move the recovery material to offline or password-manager storage before the
-temporary local copies are removed. Then separately authorize the first RC tag.
+Keep the local recovery copies with their current protections unless the user
+later requests deletion. Separately authorize the first RC tag.
