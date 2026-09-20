@@ -1,0 +1,41 @@
+name: Change proposal
+description: Propose a scoped change to the Terraform provider repository.
+title: "[Change]: "
+labels:
+  - type:chore
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and motivation
+      description: Explain the concrete problem and why it should be addressed.
+      placeholder: Describe the current limitation and its impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Requested outcome
+      description: Describe the smallest complete outcome this change should deliver.
+      placeholder: State the intended behavior or repository capability.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable checks that prove the change is complete.
+      placeholder: Provide one criterion per line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Repository evidence
+      description: Add relevant files, commits, logs, or other reproducible evidence.
+      placeholder: Link or name the evidence that supports this proposal.
+    validations:
+      required: false
