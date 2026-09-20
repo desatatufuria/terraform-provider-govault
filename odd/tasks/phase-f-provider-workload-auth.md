@@ -197,7 +197,7 @@ Acceptance:
 
 Forecast: 280–420 authored lines.
 
-### PFF-003 — Memory-only session and bounded reauthentication `[ ]`
+### PFF-003 — Memory-only session and bounded reauthentication `[x]`
 
 Route: `delegated direct`.
 
@@ -296,7 +296,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
 | PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | approved and consumed: `review-af4bcea9f41b811e`; one informational body-read cancellation warning deferred to later work | `git revert 71a7cd2`; `git revert 97c9166` |
 | PFF-002 | `bf248f2`, `a603cbe`, `593a199` | 418, including the bounded correction | focused/full/race/vet/build/mod/gofmt/Windows compile/diff PASS | one initial workload login publishes a memory-only session; protected files reject FIFOs without blocking; the same client reads the namespaced secret with no whoami or fallback | approved and consumed: `review-ec31cc20a6e8cef4` | `git revert 593a199`; then `git revert a603cbe`; then `git revert bf248f2` |
-| PFF-003 | `4f66151` | 362 | focused/full/repeated/race/vet/build/mod/gofmt/Windows compile/diff PASS | eight concurrent expired reads share one reauth; waiter cancellation, failed-flight retry, stale-result rejection and terminal secret `401` verified | medium, under native slice budget; assessment pending with next slice | `git revert 4f66151` |
+| PFF-003 | `4f66151`, `b02e479` | 455, including the 93-line advisory follow-up | focused/full/repeated/race/vet/build/mod/gofmt/Windows compile/diff PASS | eight concurrent expired reads share one reauth; pre-canceled work performs zero credential I/O; waiter cancellation, failed-flight retry, real stale-generation rejection and terminal secret `401` verified | primary candidate approved and consumed: `review-f501c5126a63eb76`; follow-up assessment pending | `git revert b02e479`; then `git revert 4f66151` |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
 
 PFF-001 functional rollback authority is `git revert 97c9166`; documentation commits preserve evidence history and are not an executable rollback sequence.
@@ -319,7 +319,9 @@ PFF-001 functional rollback authority is `git revert 97c9166`; documentation com
   delivery strategy, and work-unit boundaries frozen.
 - [x] PFF-001 — Internal workload exchange boundary.
 - [x] PFF-002 — Usable initial workload authentication.
-- [x] PFF-003 — Memory-only session and bounded reauthentication.
+- [x] PFF-003 — Memory-only session and bounded reauthentication, including the
+  separate pre-cancel, diagnostic-classification, and stale-flight proof
+  follow-up.
 - [ ] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
 
 ## Next step
