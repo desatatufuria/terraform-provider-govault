@@ -53,12 +53,12 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 
 ## Tasks
 
-- [-] **PHE-001 — Repository gate and protocol-6 scaffold**
+- [x] **PHE-001 — Repository gate and protocol-6 scaffold**
   - Pin the current official Terraform Plugin Framework dependency baseline without `latest` or branch dependencies.
   - Add protocol-6 provider server, provider metadata/schema/configuration, provider factories, Registry protocol manifest, minimal examples, and repository documentation.
   - Keep schema free of secret-valued attributes and reject unsupported authentication methods or unsafe unknown configuration.
   - Prove exact Registry address, Terraform 1.10 floor documentation, offline validation, and nil provider-data safety.
-- [ ] **PHE-002 — Bounded GoVault token client**
+- [-] **PHE-002 — Bounded GoVault token client**
   - Read the token only from the explicitly named environment variable.
   - Build a cancellation-aware, timeout-bounded HTTP client with default TLS verification and optional PEM CA file.
   - Call `/auth/whoami`, derive the session namespace, and translate stable error classes without copying response bodies, tokens, or secret values into diagnostics.
@@ -90,7 +90,11 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - Official HashiCorp documentation confirms protocol 6 provider servers and Terraform 1.10 ephemeral resources; protocol compatibility alone does not provide the product's no-state guarantee.
 - Repository gate: local repository initialized without a remote at baseline `02c3a98`; implementation branch `tfp-e-provider-bootstrap` is active.
 - CodeGraph initialized for this repository before structural work.
+- PHE-001 implementation: `36646ff` (`feat(provider): scaffold protocol 6 provider`), 12 files and 676 changed lines including generated `go.sum`; protocol-6 scaffold, non-secret provider schema, manifest, examples, generated documentation, and offline configuration tests.
+- PHE-001 verification: focused provider and protocol/repository tests, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `gofmt`, `go mod verify`, `go mod tidy -diff`, and `git diff --check` pass. The direct protocol test uses `providerserver.NewProtocol6WithError` and `GetProviderSchema`; no Terraform acceptance runtime is claimed.
+- PHE-001 RDD: frozen candidate `36646ff` was approved and acknowledged under `review-5f66995eb36334c6`. Reliability finding `R3-MODULE-TIDY` identified that the directly imported `terraform-plugin-go` module was classified as indirect; the PHE-001 closure correction ran `go mod tidy`, made it direct, and left `go mod tidy -diff` empty.
+- PHE-001 rollback: revert the closure correction first, then revert `36646ff`; GoVault remains unchanged.
 
 ## Next step
 
-Implement PHE-001 only. Keep PHE-002 and PHE-003 pending until the scaffold work unit is verified, committed, and assessed.
+Implement PHE-002 only. Keep PHE-003 pending until the bounded token client work unit is verified, committed, and assessed.
