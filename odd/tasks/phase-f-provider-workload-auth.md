@@ -2,12 +2,12 @@
 
 ## Status
 
-- Phase: provider-side implementation complete; GoVault parity pending
-- Current task: `PFF-004` provider-side work complete; GoVault parity pending
+- Phase: complete on the isolated tracker candidates
+- Current task: `PFF-005` complete
 - Branch: `tfp-f-provider-workload-auth`
 - Base: `main` at `139bc0f8ced45c169975ae3f5c581583874ba444`
 - Delivery strategy: `feature-branch-chain`
-- Forecast: 1,160–1,740 authored lines across four work units
+- Forecast: 1,710–2,570 authored lines across five work units
 - Remote delivery: not authorized
 
 ## Objective
@@ -258,6 +258,47 @@ Acceptance:
 
 Forecast: 320–480 authored lines.
 
+### PFF-005 — Isolated GoVault/provider validation `[x]`
+
+Route: `delegated direct`.
+
+Trigger evidence: contract parity, real GoVault HTTP bootstrap, controlled OIDC
+and JWKS, TLS proxying, Terraform process control, leak scanning, and two
+repositories span multiple non-trivial files.
+
+Scope:
+
+- Add a GoVault-owned copy of the versioned workload-login fixture and an
+  automated parity test against the real handler contract.
+- Run an isolated integration against GoVault branch `tfp-c-workload-login`
+  and provider branch `tfp-f-provider-workload-auth` without using `develop`.
+- Use temporary SQLite state, a controlled local issuer/JWKS, test TLS, and the
+  pinned Terraform 1.10.5/1.11.4 binaries.
+- Exercise successful login and secret read, known-expiry reauthentication,
+  real token revocation with terminal `401`, invalid assertion, and no static
+  token fallback.
+- Scan Terraform lifecycle surfaces, process output, logs, temporary files,
+  GoVault logs and SQLite/audit artifacts for distinct canaries.
+
+Acceptance:
+
+- Provider and GoVault fixtures are byte-identical and their embedded contract
+  hashes validate.
+- Tests use the real GoVault handler, services and SQLite adapter; no fake
+  workload-login backend substitutes for the integration target.
+- The provider candidate is built from the exact authorized branch and both
+  pinned Terraform versions pass within a five-minute hard timeout.
+- The controlled JWKS endpoint respects GoVault SSRF protections; production
+  safeguards are not weakened for tests.
+- Exact request counts and session generations prove renewal, terminal
+  revocation behavior and no fallback.
+- No protected canary appears in state, plan, JSON, logs, diagnostics, process
+  output, temporary artifacts or documentation.
+- No merge, push, remote execution or shared deployment is required.
+
+Forecast: 550–830 authored lines across fixture parity, reusable integration
+harness, and scenario/evidence work units.
+
 ## Required checks
 
 Per applicable work unit and again at the integration boundary:
@@ -298,6 +339,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | PFF-002 | `bf248f2`, `a603cbe`, `593a199` | 418, including the bounded correction | focused/full/race/vet/build/mod/gofmt/Windows compile/diff PASS | one initial workload login publishes a memory-only session; protected files reject FIFOs without blocking; the same client reads the namespaced secret with no whoami or fallback | approved and consumed: `review-ec31cc20a6e8cef4` | `git revert 593a199`; then `git revert a603cbe`; then `git revert bf248f2` |
 | PFF-003 | `4f66151`, `b02e479` | 455, including the 93-line advisory follow-up | focused/full/repeated/race/vet/build/mod/gofmt/Windows compile/diff PASS | eight concurrent expired reads share one reauth; pre-canceled work performs zero credential I/O; waiter cancellation, failed-flight retry, real stale-generation rejection and terminal secret `401` verified | approved and consumed: `review-f501c5126a63eb76`; follow-up approved and consumed: `review-5ae809ae92b112cb` | `git revert b02e479`; then `git revert 4f66151` |
 | PFF-004 | `d6cd027`, `2fecdcd`, `5a71860` | 395 excluding generated docs; 415 total | focused/full/race/vet/build/mod/tidy/generate/gofmt/Terraform fmt/diff PASS | Terraform 1.10.5/1.11.4 workload matrix PASS; exact lifecycle counts and leak scans PASS | approved and consumed: `review-9aec4c2f9412f982`; informational slow-runner timing advisory retained | `git revert 5a71860`; then `git revert 2fecdcd`; then `git revert d6cd027` |
+| PFF-005 | GoVault `83891e0`, `30b243c`, `0445ae7`, `bcf233d` | 991 | contract parity, focused E2E, repeated E2E, race, full tests, vet, build, mod verify, gofmt and diff PASS; `go mod tidy -diff` reports pre-existing module drift and was not mixed into this task | real GoVault plus exact provider candidate PASS on Terraform 1.10.5/1.11.4 in about 18 seconds; protected surfaces scanned | approved and consumed: `review-ea2a9daf36727eb0`; six non-blocking test-harness advisories recorded below | GoVault: `git revert bcf233d`; then `git revert 0445ae7`; then `git revert 30b243c`; then `git revert 83891e0` |
 
 PFF-001 functional rollback authority is `git revert 97c9166`; documentation commits preserve evidence history and are not an executable rollback sequence.
 ## Delivery and rollback
@@ -323,14 +365,68 @@ PFF-001 functional rollback authority is `git revert 97c9166`; documentation com
   separate pre-cancel, diagnostic-classification, and stale-flight proof
   follow-up.
 - [x] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
-- [ ] Run the separately authorized GoVault fixture parity test before declaring
-  Phase F complete.
+- [x] PFF-005 — Isolated GoVault/provider contract and runtime validation.
 
 ## Next step
 
-Provider-side Phase F work is complete locally. Obtain separate authorization
-to run the exact fixture version/hash parity test in GoVault before declaring
-Phase F complete. No GoVault checkout was used by provider runtime acceptance.
+Phase F is complete on the isolated tracker candidates. No merge, push, pull
+request, release, or shared deployment is authorized by this completion. The
+next delivery decision is whether to publish the existing feature-branch chain
+for review.
+
+## PFF-005 isolated validation evidence
+
+- GoVault candidate: commit
+  `bcf233d0868bd465c1a3e47ec32ceefd7c6cbc82`, tree
+  `5f49ecbcd6193d1133f3817b125094b6d4385fb7`.
+- Provider candidate: commit
+  `05620689eb3eb82a927590a938fa21aeef13837b`, tree
+  `5051425576a6b16e5a70160b41efe3fbc516b736`.
+- GoVault work units:
+  - `83891e0` pins the GoVault-owned workload-login fixture and handler parity
+    gate (183 authored lines).
+  - `30b243c` adds the reusable isolated harness (505 authored lines). This is
+    the smallest honest cohesive process/TLS/OIDC/SQLite boundary; splitting it
+    would separate cleanup and confidentiality invariants from their owner.
+  - `0445ae7` adds the real Terraform scenarios (271 authored lines).
+  - `bcf233d` contains bootstrap root-token logging and adds it to protected
+    scans (32 authored lines).
+- Fixture SHA-256:
+  `132279e4eacfc6a170e5b48b57d3d922dbff8bfdcb165a44d0b1ac9df469b229`;
+  the provider and GoVault fixture bytes are identical.
+- Runtime command:
+
+  ```bash
+  TF_ACC_TERRAFORM_1_10=/home/furia/.cache/govault-terraform-acceptance/1.10.5/terraform \
+  TF_ACC_TERRAFORM_1_11=/home/furia/.cache/govault-terraform-acceptance/1.11.4/terraform \
+  GOVAULT_TERRAFORM_PROVIDER_REPO=/home/furia/terraform-provider-govault \
+  go test ./tests/integration -run '^TestTerraformProviderAgainstRealGoVault$' \
+    -count=1 -v -timeout=5m
+  ```
+
+- Both pinned Terraform versions passed against real GoVault handlers,
+  services and temporary SQLite in about 18 seconds wall time. The matrix
+  proved successful dependent ephemeral reads, expiry reauthentication with
+  distinct session generations, real token revocation producing terminal
+  `401` without replay, and invalid assertion without static-token fallback.
+- Scanned surfaces: plan, show JSON, apply, state, stdout, stderr, `TF_LOG`, the
+  temporary tree, GoVault logs, SQLite/WAL data and audit data. Final GoVault
+  log SHA-256 values were
+  `cabd20d83b8f47a1be140ca27da024390f6179b3b51ebfa932c8a03b1187e614`
+  for Terraform 1.10.5 and
+  `1e4bff984654da81d94a7788f61c1aa8e0f502d606872e0bb3dd942b241c56b2`
+  for Terraform 1.11.4. Both SQLite files had SHA-256
+  `52a371445ce0812ca930aea418e7d7e9d6459f1778a6e14cb56592f08f5a08af`.
+- The focused E2E race run, full GoVault and provider test suites, vet, build,
+  module verification, formatting and diff checks passed. Full GoVault race
+  also passed in about 5m20s. `go mod tidy -diff` exposes pre-existing module
+  metadata drift; `go.mod` and `go.sum` were restored and excluded.
+- RDD lineage `review-ea2a9daf36727eb0` approved and consumed the exact
+  GoVault candidate. Informational follow-ups, not corrections to this
+  candidate: derive the expiry wait from the named TTL, document or derive the
+  cross-write scan window, consolidate duplicated command-running logic, scan
+  the intermediate secret value, decouple apply assertions from the four-second
+  TTL, and HCL-quote Windows fixture paths.
 
 ## PFF-004 runtime evidence
 
