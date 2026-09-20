@@ -100,6 +100,17 @@ Registry.
       (`ci(provider): add pinned validation workflow`).
     - RDD outcome: user declined review for this exact candidate; ordinary
       repository policy applied.
+    - Reopened after remote run `35541139948`: Terraform 1.10.5 and 1.11.4
+      acceptance passed, but documentation generation failed because
+      `tfplugindocs` v0.25.0 requires Go 1.25.8 while `go.mod` selected 1.25.0
+      with `GOTOOLCHAIN=local` in GitHub Actions.
+    - Corrected the declared development floor to Go 1.25.8, which lets
+      `setup-go` install the minimum patch release required by the pinned
+      generator while preserving the provider's Go 1.25 language baseline.
+    - Reverified with the exact Go 1.25.8 toolchain: generation produced no
+      documentation drift; vet, unit, race, and build checks passed; Terraform
+      1.10.5 and 1.11.4 acceptance passed independently (8.319s and 7.280s).
+    - Correction commit intent: `fix(ci): align Go toolchain floor`.
 
 - [x] **PRP-002 — Signed release packaging**
   - Add GoReleaser v2 packaging with Registry-compatible archive names,
@@ -191,13 +202,16 @@ Registry.
 - PRP-002 packaging and local snapshot validation completed without publishing.
 - PRP-003 operator procedure and full local verification completed without any
   remote mutation or use of release signing material.
+- Remote CI run `35541139948` exposed and localized the documentation-generator
+  toolchain mismatch; the corrected Go 1.25.8 candidate passed the full local
+  suite before publication.
 - Final feature diff before this ledger-only closure: 510 authored lines (510
   additions, no deletions), excluding ignored snapshot artifacts. The
   user-approved `single-pr` exception applies to the complete feature.
 
 ## Next step
 
-After explicit authorization, push `tfp-provider-release-pipeline` and verify
-its GitHub Actions CI. Only then configure the signing secrets and separately
-authorize creation of `v0.1.0-rc.1`. Terraform Registry registration and the
-real GoVault workload-auth smoke test remain later explicit steps.
+After explicit authorization, push the correction to PR #2 and verify its
+GitHub Actions CI. Only then configure signing secrets and separately authorize
+creation of `v0.1.0-rc.1`. Terraform Registry registration and the real GoVault
+workload-auth smoke test remain later explicit steps.

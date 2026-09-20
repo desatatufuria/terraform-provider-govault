@@ -5,7 +5,7 @@ This repository contains the standalone Terraform provider for GoVault. It suppo
 ## Requirements
 
 - Terraform 1.10 or newer
-- Go 1.25 or newer for provider development
+- Go 1.25.8 or newer for provider development
 
 The provider serves Terraform plugin protocol 6 at `registry.terraform.io/desatatufuria/govault`. The Terraform 1.10 product floor is intentionally stricter than protocol compatibility because GoVault secret reads will use Terraform ephemeral resources.
 
