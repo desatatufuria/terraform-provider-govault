@@ -68,12 +68,20 @@ func (r *secretEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 		return
 	}
 	version := int64(0)
+	if config.Version.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown secret version", "The secret version must be known before govault_secret can be opened.")
+		return
+	}
 	if !config.Version.IsNull() {
 		version = config.Version.ValueInt64()
 	}
 	secret, err := r.client.ReadSecret(ctx, config.Path.ValueString(), version)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read GoVault secret", err.Error())
+		return
+	}
+	if version > 0 && secret.Version != version {
+		resp.Diagnostics.AddError("Unexpected GoVault secret version", "GoVault returned a different secret version than requested.")
 		return
 	}
 	config.Value = types.StringValue(secret.Value)

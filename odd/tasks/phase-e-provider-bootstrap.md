@@ -102,7 +102,10 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-002 correction verification: focused redirect/TLS/body-boundary tests, `go test ./internal/client -count=20`, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go mod verify`, `go mod tidy -diff`, `gofmt`, and `git diff --check` pass.
 - PHE-002 RDD: lineage `review-b730519481aa1728` reached final verdict `APPROVED`; the review was acknowledged and its authority consumed after validating corrected target `sha256:6a7c399afd50203d86c481385da6d6e2e4c8f3443d7245b00c33ab9162846808`.
 - PHE-002 rollback: revert its work-unit commit; PHE-001 and GoVault remain unchanged.
+- PHE-003 implementation is split across `836663f` (`feat(provider): read secrets ephemerally`) and `7a846d4` (`test(provider): add ephemeral leak canaries`). It adds the single `govault_secret` ephemeral resource, bounded slash-safe reads under the authenticated namespace, generated documentation, and a local-binary-only Terraform acceptance harness.
+- PHE-003 warning hardening fails closed on unknown or mismatched versions, removes the invalid root ephemeral output fixture, prevents provider-installation fallback, bounds Unix timeout cleanup across process groups with a bounded non-Unix fallback, and scans a secret-bearing HTTP 500 failure across diagnostics and artifacts without printing canaries.
+- PHE-003 Terraform 1.10/1.11 acceptance remains unavailable because neither pinned binary is present. No Terraform certification or completed Phase E claim is made.
 
 ## Next step
 
-Implement PHE-003 only. Its ephemeral secret behavior and Terraform 1.10/1.11 acceptance evidence remain pending; Phase F and remote operations remain outside the authorized scope.
+Commit and review the PHE-003 warning hardening, then run the pinned Terraform 1.10/1.11 acceptance matrix when both local binaries are available. Phase F and remote operations remain outside the authorized scope.
