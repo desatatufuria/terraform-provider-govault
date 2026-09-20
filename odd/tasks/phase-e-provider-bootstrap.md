@@ -63,7 +63,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
   - Build a cancellation-aware, timeout-bounded HTTP client with default TLS verification and optional PEM CA file.
   - Call `/auth/whoami`, derive the session namespace, and translate stable error classes without copying response bodies, tokens, or secret values into diagnostics.
   - Prove missing-token, no-fallback, custom-CA, hostname failure, timeout, cancellation, and redaction behavior.
-- [ ] **PHE-003 — Ephemeral secret and state-safety evidence**
+- [-] **PHE-003 — Ephemeral secret and state-safety evidence**
   - Implement `govault_secret` with required `path`, optional positive `version`, and computed sensitive ephemeral result fields.
   - Read through the namespace derived from the session and the slash-safe secret endpoint; never expose namespace selection.
   - Add protocol/unit tests, pinned Terraform 1.10/1.11 acceptance harness, generated Registry docs, examples, and canary scans across plan, state, JSON, stdout/stderr, diagnostics, logs, artifacts, and docs.
@@ -98,8 +98,11 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-002 implementation: the provider reads only the environment variable selected by `token_env` (default `GOVAULT_TOKEN`), rejects missing values without fallback, builds an HTTPS-only client with normal hostname verification, optional PEM CA roots, TLS 1.2 minimum, and a 30-second timeout, then derives namespace authority from `/auth/whoami`. Only ephemeral provider data is configured; no resource or secret read was added.
 - PHE-002 safety evidence: tests cover selected/default environment lookup, no fallback, custom and untrusted CA behavior, hostname mismatch, timeout, caller cancellation, bearer request shape, namespace derivation, stable status/response failures, and redaction of token, transport, and response-body canaries from client errors and provider diagnostics.
 - PHE-002 verification: focused client/provider/repository tests, repeated focused tests, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `gofmt`, `go mod verify`, `go mod tidy -diff`, generated documentation, and `git diff --check` pass. No Terraform acceptance runtime is claimed in PHE-002.
+- PHE-002 review correction: `e38f1a7` (`fix(provider): harden token bootstrap boundaries`), 71 changed lines. Redirects are rejected before any bearer can be forwarded, the client installs an independent verified `tls.Config` rather than inheriting ambient `InsecureSkipVerify`, and `/auth/whoami` enforces a strict total response-size boundary while rejecting trailing JSON or content.
+- PHE-002 correction verification: focused redirect/TLS/body-boundary tests, `go test ./internal/client -count=20`, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go mod verify`, `go mod tidy -diff`, `gofmt`, and `git diff --check` pass.
+- PHE-002 RDD: lineage `review-b730519481aa1728` reached final verdict `APPROVED`; the review was acknowledged and its authority consumed after validating corrected target `sha256:6a7c399afd50203d86c481385da6d6e2e4c8f3443d7245b00c33ab9162846808`.
 - PHE-002 rollback: revert its work-unit commit; PHE-001 and GoVault remain unchanged.
 
 ## Next step
 
-Request explicit authorization before implementing PHE-003. Its ephemeral secret behavior and Terraform 1.10/1.11 acceptance evidence remain pending.
+Implement PHE-003 only. Its ephemeral secret behavior and Terraform 1.10/1.11 acceptance evidence remain pending; Phase F and remote operations remain outside the authorized scope.
