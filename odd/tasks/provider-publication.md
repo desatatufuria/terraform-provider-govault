@@ -42,13 +42,20 @@ would disclose non-portable local details and leave reuse rights undefined.
 
 ## Tasks
 
-- [-] PPR-001 Add licensing and sanitize non-portable evidence.
+- [x] PPR-001 Add licensing and sanitize non-portable evidence.
   - Acceptance: canonical Apache-2.0 license is tracked.
   - Acceptance: no tracked file contains an absolute workstation path.
   - Checks: formatting, diff check, Go tests, race tests, vet, build, and a
     full reachable-history credential audit.
-  - Evidence: pending.
-- [ ] PPR-002 Review and publish the exact candidate.
+  - Evidence: commit `904f9bb278d826f6d0774dce363bcc49c9294f5a`,
+    tree `9d2adaccedab3450bf3b0a7e90925c4e373c578f`, 278 authored
+    changed lines. `LICENSE` exactly matches the canonical system
+    Apache-2.0 text. `gofmt`, `git diff --check`, `go test ./...`,
+    `go test -race ./...`, `go vet ./...`, and `go build ./...` pass.
+    Current-tree workstation-path and high-confidence credential scans, the
+    full reachable-history high-confidence credential scan, and the staged
+    binary-addition check pass.
+- [-] PPR-002 Review and publish the exact candidate.
   - Acceptance: native review is resolved for the publication commit.
   - Acceptance: public remote `main` and tracker branch resolve to the exact
     approved commit.
@@ -57,4 +64,5 @@ would disclose non-portable local details and leave reuse rights undefined.
 
 ## Progress and next step
 
-PPR-001 is active. The next step is the delegated hygiene work unit.
+PPR-001 is complete. PPR-002 is active. The next step is to review the exact
+publication candidate before any authorized remote creation or push.
