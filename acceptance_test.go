@@ -16,6 +16,13 @@ import (
 	"time"
 )
 
+const (
+	acceptanceTokenCanary       = "gv-acceptance-token-canary"
+	acceptanceSecretCanary      = "gv-acceptance-secret-canary"
+	acceptanceDiagnosticLimit   = 8 * 1024
+	acceptanceDiagnosticOmitted = "\n...[diagnostic truncated]...\n"
+)
+
 func TestTerraformEphemeralAcceptance(t *testing.T) {
 	binaries := map[string]string{"1.10": os.Getenv("TF_ACC_TERRAFORM_1_10"), "1.11": os.Getenv("TF_ACC_TERRAFORM_1_11")}
 	if binaries["1.10"] == "" && binaries["1.11"] == "" {
@@ -36,7 +43,7 @@ func TestTerraformEphemeralAcceptance(t *testing.T) {
 
 func runTerraformCanary(t *testing.T, binary, version, providerDir string) {
 	t.Helper()
-	const token, secret = "gv-acceptance-token-canary", "gv-acceptance-secret-canary"
+	const token, secret = acceptanceTokenCanary, acceptanceSecretCanary
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			t.Error("request did not contain the exact acceptance bearer")
@@ -124,9 +131,29 @@ func runAcceptanceCommand(t *testing.T, dir string, env []string, name string, a
 	defer cancel()
 	output, err, class := executeAcceptanceCommand(ctx, dir, env, name, args...)
 	if err != nil {
-		t.Fatalf("%s command failed (%s)", filepath.Base(name), class)
+		t.Fatal(formatAcceptanceFailure(name, args, class, output))
 	}
 	return output
+}
+
+func formatAcceptanceFailure(name string, args []string, class string, output acceptanceOutput) string {
+	command := filepath.Base(name)
+	if len(args) > 0 {
+		command += " " + args[0]
+	}
+	diagnostic := strings.TrimSpace(output.stderr + "\n" + output.stdout)
+	diagnostic = strings.NewReplacer(
+		acceptanceTokenCanary, "[REDACTED TOKEN CANARY]",
+		acceptanceSecretCanary, "[REDACTED SECRET CANARY]",
+	).Replace(diagnostic)
+	if len(diagnostic) > acceptanceDiagnosticLimit {
+		half := (acceptanceDiagnosticLimit - len(acceptanceDiagnosticOmitted)) / 2
+		diagnostic = diagnostic[:half] + acceptanceDiagnosticOmitted + diagnostic[len(diagnostic)-half:]
+	}
+	if diagnostic == "" {
+		diagnostic = "[no command output]"
+	}
+	return command + " failed (" + class + "):\n" + diagnostic
 }
 
 func executeAcceptanceCommand(ctx context.Context, dir string, env []string, name string, args ...string) (acceptanceOutput, error, string) {
@@ -219,5 +246,30 @@ func TestReplaceEnvRemovesInheritedDuplicates(t *testing.T) {
 	got := replaceEnv([]string{"KEEP=1", "TOKEN=old", "TOKEN=older"}, "TOKEN=new")
 	if strings.Join(got, ",") != "KEEP=1,TOKEN=new" {
 		t.Fatalf("environment = %q", got)
+	}
+}
+
+func TestFormatAcceptanceFailureIsUsefulBoundedAndRedacted(t *testing.T) {
+	padding := strings.Repeat("x", acceptanceDiagnosticLimit)
+	got := formatAcceptanceFailure(
+		"/verified/terraform",
+		[]string{"plan", "-input=false"},
+		"exit status 1",
+		acceptanceOutput{
+			stderr: "useful failure before " + acceptanceTokenCanary + padding + acceptanceSecretCanary + " useful failure after",
+		},
+	)
+	for _, want := range []string{"terraform plan failed (exit status 1)", "useful failure before", "useful failure after", acceptanceDiagnosticOmitted} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("diagnostic missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{acceptanceTokenCanary, acceptanceSecretCanary} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("diagnostic leaked a canary")
+		}
+	}
+	if len(got) > acceptanceDiagnosticLimit+128 {
+		t.Fatalf("diagnostic length = %d", len(got))
 	}
 }
