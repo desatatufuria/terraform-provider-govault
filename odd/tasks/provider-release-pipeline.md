@@ -52,6 +52,10 @@ Registry.
   artifacts.
 - Initial reviewed boundary: `aeb308e1881d742de2a0958517c84571d7b0ece5`.
 - RDD mode: enabled globally; assess each committed work unit.
+- RDD exception: user declined review only for CI candidate
+  `eac3a9d312bbd7f1471d3594a0a2685f6e67c3b1` / target
+  `sha256:273e7ac53637a444eb5d8766a84aafa2d64a45daf1f9c0d7dd1d1e2b07e86fb1`;
+  ordinary policy applies to that candidate only.
 
 ## Tasks
 
@@ -88,7 +92,7 @@ Registry.
       behavior or generated documentation changes were made.
     - Work-unit commit intent: `ci(provider): add pinned validation workflow`.
 
-- [-] **PRP-002 — Signed release packaging**
+- [x] **PRP-002 — Signed release packaging**
   - Add GoReleaser v2 packaging with Registry-compatible archive names,
     versioned binaries, protocol manifest, SHA-256 checksums, and detached GPG
     checksum signature.
@@ -100,9 +104,20 @@ Registry.
       checksums without publishing.
     - No private signing material is present or generated in the repository.
   - Route: delegated writer; writer trigger fired.
-  - Evidence: pending.
+  - Evidence:
+    - GoReleaser `v2.18.2` check and unsigned clean snapshot passed.
+    - Snapshot produced 11 Registry-compatible ZIPs; each contains only the
+      versioned provider binary. Checksums include every ZIP and the renamed
+      protocol-6 manifest with its verified SHA-256.
+    - Release workflow is tag-triggered, SHA-pinned, validates SemVer, marks
+      prereleases automatically, and grants `contents: write` only to its job.
+    - Signing key/passphrase enter only through GitHub secrets; no key was
+      generated or stored. Detached binary GPG signing is configured.
+    - Runtime harness: local cross-platform snapshot completed in 2m2s.
+    - Rollback: remove `.goreleaser.yml` and `.github/workflows/release.yml`,
+      and revert the `dist/` ignore entry; provider behavior is unchanged.
 
-- [ ] **PRP-003 — Operator documentation and final verification**
+- [-] **PRP-003 — Operator documentation and final verification**
   - Document immutable tag/release procedure, required GitHub secrets, expected
     artifacts, prerelease pinning, and the explicit boundary before Terraform
     Registry registration.
@@ -127,7 +142,8 @@ Registry.
   Terraform 1.10.5 and 1.11.4 acceptance jobs.
 - Running authored change count before the PRP-001 commit: 237 additions and
   no deletions (generated artifacts excluded).
+- PRP-002 packaging and local snapshot validation completed without publishing.
 
 ## Next step
 
-Implement and verify PRP-002 signed release packaging without publishing.
+Document and run final verification for PRP-003 without publishing.
