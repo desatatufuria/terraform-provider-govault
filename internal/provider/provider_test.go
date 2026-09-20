@@ -264,7 +264,7 @@ func TestConfigureWorkloadLoginThenReadsSecret(t *testing.T) {
 	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "OIDC_ASSERTION", nil)}
 	var response provider.ConfigureResponse
 	p.Configure(context.Background(), request, &response)
-	client, ok := response.EphemeralResourceData.(*govaultclient.Client)
+	client, ok := response.EphemeralResourceData.(secretReader)
 	if response.Diagnostics.HasError() || !ok {
 		t.Fatalf("configure diagnostics = %v", response.Diagnostics)
 	}

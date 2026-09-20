@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 
-	govaultclient "github.com/desatatufuria/terraform-provider-govault/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
@@ -18,7 +17,7 @@ var (
 	_ ephemeral.EphemeralResourceWithClose     = (*secretEphemeralResource)(nil)
 )
 
-type secretEphemeralResource struct{ client *govaultclient.Client }
+type secretEphemeralResource struct{ client secretReader }
 
 type secretEphemeralModel struct {
 	Path            types.String `tfsdk:"path"`
@@ -49,7 +48,7 @@ func (r *secretEphemeralResource) Configure(_ context.Context, req ephemeral.Con
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := req.ProviderData.(*govaultclient.Client)
+	client, ok := req.ProviderData.(secretReader)
 	if !ok {
 		resp.Diagnostics.AddError("Invalid GoVault client", "The provider supplied unexpected ephemeral resource data.")
 		return

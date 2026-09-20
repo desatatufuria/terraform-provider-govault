@@ -180,6 +180,9 @@ func (c *Client) LoginWorkload(ctx context.Context, roleRef, assertion string) (
 
 	payload, err := readBoundedBody(response.Body, maxWorkloadLoginBody)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return WorkloadSession{}, sanitizedRequestError(err)
+		}
 		return WorkloadSession{}, ErrInvalidResponse
 	}
 	if response.StatusCode != http.StatusOK {
@@ -237,7 +240,13 @@ func workloadLoginFailure(response *http.Response, body []byte) error {
 
 func readBoundedBody(body io.Reader, limit int64) ([]byte, error) {
 	payload, err := io.ReadAll(io.LimitReader(body, limit+1))
-	if err != nil || int64(len(payload)) > limit {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, ErrInvalidResponse
+	}
+	if int64(len(payload)) > limit {
 		return nil, ErrInvalidResponse
 	}
 	return payload, nil

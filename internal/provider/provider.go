@@ -132,7 +132,7 @@ func (p *goVaultProvider) Configure(ctx context.Context, req provider.ConfigureR
 	resp.EphemeralResourceData = configuredClient
 }
 
-func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) *govaultclient.Client {
+func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) secretReader {
 	method := config.AuthMethod.ValueString()
 	if method != tokenAuth && method != workloadAuth {
 		diagnostics.AddError("Unsupported authentication method", "The provider auth_method must be either \"token\" or \"workload\".")
@@ -176,9 +176,8 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 		diagnostics.AddError("Missing workload role reference", "workload_role_ref must be configured and non-empty.")
 		return nil
 	}
-	assertion, err := readWorkloadAssertion(config, lookupEnv)
-	if err != nil {
-		diagnostics.AddError("Invalid workload assertion source", err.Error())
+	if config.WorkloadAssertionEnv.IsNull() == config.WorkloadAssertionFile.IsNull() {
+		diagnostics.AddError("Invalid workload assertion source", "Configure exactly one workload assertion source.")
 		return nil
 	}
 	client, err := govaultclient.NewProtocolClient(govaultclient.Config{Address: config.Address.ValueString(), CACertFile: config.CACertFile.ValueString()})
@@ -186,16 +185,12 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 		diagnostics.AddError("Invalid GoVault client configuration", err.Error())
 		return nil
 	}
-	session, err := client.LoginWorkload(ctx, roleRef, assertion)
-	if err != nil {
+	session := newWorkloadSession(client, roleRef, func() (string, error) { return readWorkloadAssertion(config, lookupEnv) })
+	if err := session.authenticate(ctx); err != nil {
 		diagnostics.AddError("GoVault workload authentication failed", err.Error())
 		return nil
 	}
-	if err := client.InstallWorkloadSession(session); err != nil {
-		diagnostics.AddError("Invalid GoVault workload session", err.Error())
-		return nil
-	}
-	return client
+	return session
 }
 
 func (p *goVaultProvider) DataSources(context.Context) []func() datasource.DataSource {

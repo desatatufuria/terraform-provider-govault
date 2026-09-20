@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -151,6 +152,20 @@ func TestLoginWorkloadTransportIsBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestLoginWorkloadPreservesBodyReadCancellation(t *testing.T) {
+	client := &Client{baseURL: "https://govault.invalid", now: time.Now, httpClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(errorReader{context.DeadlineExceeded}), Header: make(http.Header)}, nil
+	})}}
+	_, err := client.LoginWorkload(context.Background(), "role", "assertion")
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("body-read error = %v", err)
+	}
+}
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestLoginWorkloadRejectsInvalidInputWithoutRequest(t *testing.T) {
 	t.Parallel()
