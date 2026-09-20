@@ -397,9 +397,9 @@ for review.
 - Runtime command:
 
   ```bash
-  TF_ACC_TERRAFORM_1_10=/home/furia/.cache/govault-terraform-acceptance/1.10.5/terraform \
-  TF_ACC_TERRAFORM_1_11=/home/furia/.cache/govault-terraform-acceptance/1.11.4/terraform \
-  GOVAULT_TERRAFORM_PROVIDER_REPO=/home/furia/terraform-provider-govault \
+  TF_ACC_TERRAFORM_1_10="$HOME/.cache/govault-terraform-acceptance/1.10.5/terraform" \
+  TF_ACC_TERRAFORM_1_11="$HOME/.cache/govault-terraform-acceptance/1.11.4/terraform" \
+  GOVAULT_TERRAFORM_PROVIDER_REPO="${PROVIDER_REPO:?set to provider checkout}" \
   go test ./tests/integration -run '^TestTerraformProviderAgainstRealGoVault$' \
     -count=1 -v -timeout=5m
   ```
@@ -435,8 +435,8 @@ for review.
 - Runtime command:
 
   ```bash
-  TF_ACC_TERRAFORM_1_10=/home/furia/.cache/govault-terraform-acceptance/1.10.5/terraform \
-  TF_ACC_TERRAFORM_1_11=/home/furia/.cache/govault-terraform-acceptance/1.11.4/terraform \
+  TF_ACC_TERRAFORM_1_10="$HOME/.cache/govault-terraform-acceptance/1.10.5/terraform" \
+  TF_ACC_TERRAFORM_1_11="$HOME/.cache/govault-terraform-acceptance/1.11.4/terraform" \
   go test . -run '^TestTerraformEphemeralAcceptance$' -count=1 -v
   ```
 
