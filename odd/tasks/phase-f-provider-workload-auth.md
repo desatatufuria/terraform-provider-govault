@@ -299,6 +299,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | PFF-003 | pending | pending | pending | focused concurrent session/expiry tests | pending | revert PFF-003 work-unit commit(s) |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
 
+PFF-001 functional rollback authority is `git revert 97c9166`; documentation commits preserve evidence history and are not an executable rollback sequence.
 ## Delivery and rollback
 
 - Chain strategy: `feature-branch-chain`.
