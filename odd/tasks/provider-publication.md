@@ -55,14 +55,21 @@ would disclose non-portable local details and leave reuse rights undefined.
     Current-tree workstation-path and high-confidence credential scans, the
     full reachable-history high-confidence credential scan, and the staged
     binary-addition check pass.
-- [-] PPR-002 Review and publish the exact candidate.
+- [x] PPR-002 Review and publish the exact candidate.
   - Acceptance: native review is resolved for the publication commit.
   - Acceptance: public remote `main` and tracker branch resolve to the exact
     approved commit.
   - Acceptance: repository visibility and default branch are verified.
-  - Evidence: pending.
+  - Evidence: native RDD was explicitly declined for candidate `114501e` and
+    recorded as `declined_this_candidate`; ordinary repository policy applied.
+    GitHub repository `desatatufuria/terraform-provider-govault` is public,
+    reports Apache-2.0, uses `main` as its default branch, and initially
+    published both `main` and `tfp-f-provider-workload-auth` at
+    `114501e28d94bf17b4c50227cb374c49eea1205f`. The public README returned
+    HTTP 200.
 
 ## Progress and next step
 
-PPR-001 is complete. PPR-002 is active. The next step is to review the exact
-publication candidate before any authorized remote creation or push.
+PPR-001 and PPR-002 are complete. The provider source repository is public;
+release automation and Terraform Registry publication remain separate future
+work and were not included in this task.
