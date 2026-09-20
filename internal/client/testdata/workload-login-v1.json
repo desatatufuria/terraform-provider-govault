@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "govault_provenance": "docs/terraform-provider-govault-phase-0-contract.md@fe496490",
+  "content_sha256": "c5a2911bc986281a288e5fbb9dc35a3ccc40c85c7f174a899dee0c9ec627d9aa",
+  "contract": {"endpoint":"POST /auth/workload/login","request_fields":["role_ref","assertion"],"response_required":["token","access_token","namespace","expires_at"],"statuses":{"400":"invalid_request","401":"unauthenticated","429":"rate_limited","503":"service_unavailable"},"assertion_max_bytes":262144,"retry_after_max_bytes":20}
+}

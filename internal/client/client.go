@@ -12,17 +12,23 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
-	DefaultTimeout = 30 * time.Second
-	whoAmIPath     = "/auth/whoami"
-	maxWhoAmIBody  = 1 << 20
-	maxSecretBody  = 7 << 20
+	DefaultTimeout            = 30 * time.Second
+	whoAmIPath                = "/auth/whoami"
+	maxWhoAmIBody             = 1 << 20
+	maxSecretBody             = 7 << 20
+	workloadLoginPath         = "/auth/workload/login"
+	maxWorkloadAssertionBytes = 262144
+	maxWorkloadLoginBody      = 1 << 20
+	maxRetryAfterBytes        = 20
 )
 
 var (
@@ -32,6 +38,9 @@ var (
 	ErrRequestFailed        = errors.New("GoVault request failed")
 	ErrUnexpectedStatus     = errors.New("GoVault returned an unexpected status")
 	ErrInvalidResponse      = errors.New("GoVault returned an invalid response")
+	ErrInvalidRequest       = errors.New("GoVault rejected the request")
+	ErrRateLimited          = errors.New("GoVault rate limited the request")
+	ErrServiceUnavailable   = errors.New("GoVault service unavailable")
 )
 
 type Config struct {
@@ -45,10 +54,30 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+	now        func() time.Time
 
 	mu        sync.RWMutex
 	namespace string
 }
+
+// WorkloadSession is the short-lived session returned by workload login.
+type WorkloadSession struct {
+	Token     string
+	Namespace string
+	ExpiresAt time.Time
+}
+
+// WorkloadLoginError contains only stable, non-sensitive protocol metadata.
+type WorkloadLoginError struct {
+	StatusCode        int
+	Code              string
+	RetryAfterSeconds uint64
+	HasRetryAfter     bool
+	cause             error
+}
+
+func (e *WorkloadLoginError) Error() string { return e.cause.Error() }
+func (e *WorkloadLoginError) Unwrap() error { return e.cause }
 
 type whoAmIResponse struct {
 	Namespace string `json:"namespace"`
@@ -60,12 +89,25 @@ type Secret struct {
 }
 
 func New(config Config) (*Client, error) {
+	if strings.TrimSpace(config.Token) == "" || strings.IndexFunc(config.Token, unicode.IsSpace) >= 0 {
+		return nil, fmt.Errorf("%w: token is empty or malformed", ErrInvalidConfiguration)
+	}
+	return newProtocolClient(config)
+}
+
+// NewProtocolClient constructs the verified HTTP boundary without requiring a
+// static token. Authentication methods remain explicit operations on Client.
+func NewProtocolClient(config Config) (*Client, error) {
+	if config.Token != "" {
+		return nil, fmt.Errorf("%w: protocol client cannot accept a static token", ErrInvalidConfiguration)
+	}
+	return newProtocolClient(config)
+}
+
+func newProtocolClient(config Config) (*Client, error) {
 	baseURL, err := normalizeAddress(config.Address)
 	if err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(config.Token) == "" || strings.IndexFunc(config.Token, unicode.IsSpace) >= 0 {
-		return nil, fmt.Errorf("%w: token is empty or malformed", ErrInvalidConfiguration)
 	}
 
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
@@ -98,6 +140,7 @@ func New(config Config) (*Client, error) {
 	return &Client{
 		baseURL: baseURL,
 		token:   config.Token,
+		now:     time.Now,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
@@ -106,6 +149,108 @@ func New(config Config) (*Client, error) {
 			},
 		},
 	}, nil
+}
+
+// LoginWorkload exchanges one external assertion for one GoVault session.
+// It performs exactly one HTTP request and never retries or follows redirects.
+func (c *Client) LoginWorkload(ctx context.Context, roleRef, assertion string) (WorkloadSession, error) {
+	if strings.Trim(roleRef, " \t\n\r\v\f") == "" || len(roleRef) > 128 ||
+		strings.Trim(assertion, " \t\n\r\v\f") == "" || len(assertion) > maxWorkloadAssertionBytes || !utf8.ValidString(assertion) {
+		return WorkloadSession{}, ErrInvalidConfiguration
+	}
+	body, err := json.Marshal(struct {
+		RoleRef   string `json:"role_ref"`
+		Assertion string `json:"assertion"`
+	}{roleRef, assertion})
+	if err != nil {
+		return WorkloadSession{}, ErrRequestFailed
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+workloadLoginPath, bytes.NewReader(body))
+	if err != nil {
+		return WorkloadSession{}, ErrRequestFailed
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return WorkloadSession{}, sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+
+	payload, err := readBoundedBody(response.Body, maxWorkloadLoginBody)
+	if err != nil {
+		return WorkloadSession{}, ErrInvalidResponse
+	}
+	if response.StatusCode != http.StatusOK {
+		return WorkloadSession{}, workloadLoginFailure(response, payload)
+	}
+	var result struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+		Namespace   string `json:"namespace"`
+		ExpiresAt   int64  `json:"expires_at"`
+	}
+	if decodeOneJSON(payload, &result) != nil || result.Token == "" || result.Token != result.AccessToken ||
+		strings.TrimSpace(result.Namespace) == "" || result.ExpiresAt <= c.now().Unix() {
+		return WorkloadSession{}, ErrInvalidResponse
+	}
+	return WorkloadSession{Token: result.Token, Namespace: result.Namespace, ExpiresAt: time.Unix(result.ExpiresAt, 0)}, nil
+}
+
+func workloadLoginFailure(response *http.Response, body []byte) error {
+	want := map[int]struct {
+		code string
+		err  error
+	}{
+		http.StatusBadRequest:         {"invalid_request", ErrInvalidRequest},
+		http.StatusUnauthorized:       {"unauthenticated", ErrUnauthorized},
+		http.StatusTooManyRequests:    {"rate_limited", ErrRateLimited},
+		http.StatusServiceUnavailable: {"service_unavailable", ErrServiceUnavailable},
+	}
+	expected, ok := want[response.StatusCode]
+	if !ok {
+		return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, response.StatusCode)
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if decodeOneJSON(body, &payload) != nil || payload.Code != expected.code {
+		return ErrInvalidResponse
+	}
+	failure := &WorkloadLoginError{StatusCode: response.StatusCode, Code: payload.Code, cause: expected.err}
+	if response.StatusCode == http.StatusTooManyRequests {
+		value := response.Header.Get("Retry-After")
+		if value != "" {
+			if len(value) > maxRetryAfterBytes || strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+				return ErrInvalidResponse
+			}
+			seconds, err := strconv.ParseUint(value, 10, 64)
+			if err != nil || seconds == 0 {
+				return ErrInvalidResponse
+			}
+			failure.RetryAfterSeconds, failure.HasRetryAfter = seconds, true
+		}
+	}
+	return failure
+}
+
+func readBoundedBody(body io.Reader, limit int64) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil || int64(len(payload)) > limit {
+		return nil, ErrInvalidResponse
+	}
+	return payload, nil
+}
+
+func decodeOneJSON(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrInvalidResponse
+	}
+	return nil
 }
 
 func (c *Client) Authenticate(ctx context.Context) error {
