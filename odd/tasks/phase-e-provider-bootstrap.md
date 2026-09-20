@@ -115,9 +115,9 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-003 runtime result: both Terraform 1.10.5 and 1.11.4 matrix cases pass. The preserved log `/home/furia/.cache/govault-terraform-acceptance/phe-003-runtime-matrix-fixture-fix.log` has SHA-256 `2806b275af779c3bef82425a637ab9df9e15e5f2ca9f88501978b90e2bdcb717` and contains no protected token or secret canaries.
 - PHE-003 state-safety surfaces: the harness exercises `plan`, plan JSON via `show -json`, `apply`, `state pull`, the expected secret-bearing HTTP 500 path, Terraform stdout/stderr and trace log, the complete temporary artifact tree, and repository README/docs/examples. Canary scans pass, and the negative HTTP 500 path proves `Ephemeral Open` reaches the GoVault read boundary.
 - PHE-003 final RDD: lineage `review-d2b689f736515394` reviewed candidate `d946466` and reached `APPROVED`; its approval was acknowledged and the authority consumed. Non-blocking follow-ups are stronger formal provenance binding between the receipt, candidate, exact binary hashes, command, and log, plus an explicit successful-read counter in the positive acceptance path.
-- Phase E integration RDD: lineage `review-7487aee00d19db1c` found `R3-POST-MERGE-ROLLBACK` in the original merge candidate. This bounded ledger correction records the effective first-parent merge rollback; its final verdict is intentionally not preclaimed before same-lineage re-review.
+- Phase E integration RDD: lineage `review-7487aee00d19db1c` found `R3-POST-MERGE-ROLLBACK` in the original merge candidate. Correction `3cb9472` records the effective first-parent merge rollback; corrected target `sha256:2f6039dfa1af50551275af28e095ffcc49b1de56277a83c7f079d0231f270de4` reached `APPROVED`, was acknowledged, and its authority was consumed.
 - Phase E is complete locally. This does not authorize or claim a remote repository, push, pull request, release, Phase F, or OpenTofu certification.
 
 ## Next step
 
-Phase E is integrated locally. Complete the same-lineage correction review before any delivery decision; Phase F and remote operations remain unopened and unauthorized.
+Phase E is integrated and reviewed locally. The next step is the user's decision between remote delivery or opening Phase F; neither is authorized by this ledger closure.
