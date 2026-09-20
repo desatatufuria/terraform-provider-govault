@@ -113,6 +113,9 @@ Registry.
     - Correction commit: `a9faaf7b` (`fix(ci): align Go toolchain floor`).
     - Correction RDD outcome: medium configuration change, under the review
       budget; no review was due.
+    - Remote CI run `35541498173` passed at corrected head `798843c6`: Go
+      formatting, generation, vet, unit, race, and build checks succeeded, as
+      did Terraform 1.10.5 and 1.11.4 acceptance.
 
 - [x] **PRP-002 — Signed release packaging**
   - Add GoReleaser v2 packaging with Registry-compatible archive names,
@@ -207,13 +210,16 @@ Registry.
 - Remote CI run `35541139948` exposed and localized the documentation-generator
   toolchain mismatch; the corrected Go 1.25.8 candidate passed the full local
   suite before publication.
+- Corrected remote run `35541498173` completed successfully. GitHub emitted
+  non-blocking Node.js 20 deprecation notices for pinned third-party actions;
+  upgrading those actions is a separate maintenance concern, not a release
+  correctness failure.
 - Final feature diff before this ledger-only closure: 510 authored lines (510
   additions, no deletions), excluding ignored snapshot artifacts. The
   user-approved `single-pr` exception applies to the complete feature.
 
 ## Next step
 
-After explicit authorization, push the correction to PR #2 and verify its
-GitHub Actions CI. Only then configure signing secrets and separately authorize
+After merge approval, configure signing secrets and separately authorize
 creation of `v0.1.0-rc.1`. Terraform Registry registration and the real GoVault
 workload-auth smoke test remain later explicit steps.
