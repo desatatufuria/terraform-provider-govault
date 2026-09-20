@@ -84,9 +84,22 @@ func runTerraformCanary(t *testing.T, binary, version, providerDir string) {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal("write acceptance CA")
 	}
-	config := `terraform { required_version = "~> ` + version + `.0"; required_providers { govault = { source = "desatatufuria/govault" } } }
-provider "govault" { address = "` + server.URL + `"; auth_method = "token"; ca_cert_file = "` + ca + `" }
-ephemeral "govault_secret" "canary" { path = "app/key" }
+	config := `terraform {
+  required_version = "~> ` + version + `.0"
+  required_providers {
+    govault = {
+      source = "desatatufuria/govault"
+    }
+  }
+}
+provider "govault" {
+  address      = "` + server.URL + `"
+  auth_method  = "token"
+  ca_cert_file = "` + ca + `"
+}
+ephemeral "govault_secret" "canary" {
+  path = "app/key"
+}
 `
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)

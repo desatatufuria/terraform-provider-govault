@@ -38,7 +38,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - Source: the approved GoVault program configuration `openspec/config.yaml` (`strict_tdd: false`, `rules.apply.tdd: false`).
 - No RED evidence will be invented.
 - Primary runner: `go test ./...`; focused package tests run before broader race, vet, build, formatting, protocol, documentation, and leak checks.
-- Terraform acceptance needs pinned 1.10 and 1.11 binaries. Neither Terraform nor OpenTofu is currently installed; unavailable checks must remain explicit until the local tool gate is satisfied.
+- Terraform acceptance uses locally cached, cryptographically verified official Terraform 1.10.5 and 1.11.4 Linux amd64 binaries. OpenTofu remains outside the Phase E certification scope.
 
 ## Delivery and routing
 
@@ -109,6 +109,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-003 runtime diagnosis: verified official Terraform 1.10.5 and 1.11.4 binaries both pass `version -json` and fail at the first `plan`; the existing helper hid the underlying Terraform diagnostic. The harness now reports the failing subcommand with bounded output after explicit token/secret-canary redaction, with a negative regression test. This diagnostic-only change does not alter provider behavior, initialization, or the fixture.
 - PHE-003 diagnostic hardening replaces raw-output publication with allowlisted structured signals, sanitizes command/class metadata, captures bounded head/tail data from the child process, normalizes invalid UTF-8 and terminal controls, and scans the entire stream for protected canaries including split writes. Tests cover an unknown arbitrary secret, hostile metadata, large output, split canaries, invalid UTF-8, ANSI, and control bytes.
 - PHE-003 safe-diagnostic runtime evidence: the verified Terraform 1.10.5/1.11.4 matrix still fails at the unchanged fixture, but now emits only `terraform plan failed (exit status 1); diagnostics: Invalid character, Invalid single-argument block definition`; the preserved log contains no protected canaries.
+- PHE-003 fixture correction replaces the invalid semicolon-separated single-line HCL with equivalent multiline HCL; it does not alter provider behavior or the acceptance scenario.
 - PHE-003 Terraform 1.10/1.11 acceptance has run but remains failing pending the separate fixture correction and a passing rerun. No Terraform certification or completed Phase E claim is made.
 
 ## Next step
