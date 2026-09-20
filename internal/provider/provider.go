@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -187,7 +188,12 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 	}
 	session := newWorkloadSession(client, roleRef, func() (string, error) { return readWorkloadAssertion(config, lookupEnv) })
 	if err := session.authenticate(ctx); err != nil {
-		diagnostics.AddError("GoVault workload authentication failed", err.Error())
+		var sourceError assertionSourceError
+		if errors.As(err, &sourceError) {
+			diagnostics.AddError("Invalid workload assertion source", err.Error())
+		} else {
+			diagnostics.AddError("GoVault workload authentication failed", err.Error())
+		}
 		return nil
 	}
 	return session

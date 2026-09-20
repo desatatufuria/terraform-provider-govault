@@ -111,16 +111,42 @@ func TestWorkloadSessionWaitersCancelIndependentlyAndFlightCleansUp(t *testing.T
 	}
 }
 
+func TestWorkloadSessionPreCanceledWorkDoesNoCredentialIO(t *testing.T) {
+	var sources, logins atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { logins.Add(1) }))
+	defer server.Close()
+	session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { sources.Add(1); return "assertion", nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.authenticate(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled error = %v", err)
+	}
+	flightCtx, cancelFlight := context.WithCancel(context.Background())
+	flight := &sessionFlight{ctx: flightCtx, cancel: cancelFlight, done: make(chan struct{}), generation: 1}
+	session.flight = flight
+	cancelFlight()
+	session.runFlight(flight)
+	if sources.Load() != 0 || logins.Load() != 0 || session.flight != nil {
+		t.Fatalf("sources=%d logins=%d flight=%v", sources.Load(), logins.Load(), session.flight)
+	}
+}
+
 func TestWorkloadSessionRejectsStaleCommitAndDoesNotReplayUnauthorized(t *testing.T) {
 	var logins, secrets atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/auth/workload/login" {
-			logins.Add(1)
-			_, _ = w.Write([]byte(`{"token":"session","access_token":"session","namespace":"team-a","expires_at":4102444800}`))
+			n := logins.Add(1)
+			fmt.Fprintf(w, `{"token":"s%d","access_token":"s%d","namespace":"team-%d","expires_at":4102444800}`, n, n, n)
 			return
 		}
-		secrets.Add(1)
-		w.WriteHeader(http.StatusUnauthorized)
+		if secrets.Add(1) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/ns/team-2/secrets/item" || r.Header.Get("Authorization") != "Bearer s2" {
+			t.Errorf("stale credentials used: path=%q authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"value":"secret","version":1}`))
 	}))
 	defer server.Close()
 	client := testWorkloadClient(t, server)
@@ -132,12 +158,24 @@ func TestWorkloadSessionRejectsStaleCommitAndDoesNotReplayUnauthorized(t *testin
 	if _, err := session.ReadSecret(context.Background(), "app/key", 0); !errors.Is(err, govaultclient.ErrUnauthorized) {
 		t.Fatalf("secret error = %v", err)
 	}
-	stale := &sessionFlight{generation: session.generation, done: make(chan struct{})}
+	flightCtx, cancel := context.WithCancel(context.Background())
+	session.mu.Lock()
+	session.next++
+	stale := &sessionFlight{ctx: flightCtx, cancel: cancel, done: make(chan struct{}), generation: session.next, waiters: 1}
+	session.flight, session.expiresAt = stale, time.Time{}
+	session.mu.Unlock()
+	session.leaveFlight(stale)
+	if err := session.authenticate(context.Background()); err != nil {
+		t.Fatalf("new generation: %v", err)
+	}
 	if err := session.commitFlight(stale, govaultclient.WorkloadSession{Token: "stale", Namespace: "other", ExpiresAt: time.Unix(4102444900, 0)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("stale commit error = %v", err)
 	}
-	if logins.Load() != 1 || secrets.Load() != 1 || client.Namespace() != "team-a" {
-		t.Fatalf("logins=%d secrets=%d namespace=%q", logins.Load(), secrets.Load(), client.Namespace())
+	if _, err := session.ReadSecret(context.Background(), "app/key", 0); err != nil {
+		t.Fatalf("new generation secret read: %v", err)
+	}
+	if logins.Load() != 2 || secrets.Load() != 2 || client.Namespace() != "team-2" || session.generation != 3 {
+		t.Fatalf("logins=%d secrets=%d namespace=%q generation=%d", logins.Load(), secrets.Load(), client.Namespace(), session.generation)
 	}
 }
 

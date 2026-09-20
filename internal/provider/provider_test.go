@@ -276,6 +276,19 @@ func TestConfigureWorkloadLoginThenReadsSecret(t *testing.T) {
 	}
 }
 
+func TestConfigureClassifiesLocalAssertionSourceFailure(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("local source failure reached network") }))
+	defer server.Close()
+	p := &goVaultProvider{lookupEnv: mapLookup(nil)}
+	s := providerSchema(t)
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "MISSING_ASSERTION", nil)}
+	var response provider.ConfigureResponse
+	p.Configure(context.Background(), request, &response)
+	if !hasDiagnosticSummary(response.Diagnostics.Errors(), "Invalid workload assertion source") || hasDiagnosticSummary(response.Diagnostics.Errors(), "GoVault workload authentication failed") {
+		t.Fatalf("diagnostics = %v", response.Diagnostics)
+	}
+}
+
 func TestConfigureDiagnosticsRedactTokenAndResponseBody(t *testing.T) {
 	const (
 		token  = "gv.provider-canary"

@@ -12,6 +12,8 @@ type secretReader interface {
 	ReadSecret(context.Context, string, int64) (govaultclient.Secret, error)
 }
 
+type assertionSourceError struct{ error }
+
 type sessionFlight struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -47,12 +49,17 @@ func (s *workloadSession) ReadSecret(ctx context.Context, path string, version i
 
 func (s *workloadSession) authenticate(ctx context.Context) error {
 	s.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	if s.generation != 0 && s.expiresAt.After(s.now()) {
 		s.mu.Unlock()
 		return nil
 	}
 	flight := s.flight
 	if flight == nil {
+		// The flight owns its context so one departing waiter cannot cancel peers.
 		flightCtx, cancel := context.WithCancel(context.Background())
 		s.next++
 		flight = &sessionFlight{ctx: flightCtx, cancel: cancel, done: make(chan struct{}), generation: s.next}
@@ -85,7 +92,16 @@ func (s *workloadSession) leaveFlight(flight *sessionFlight) {
 }
 
 func (s *workloadSession) runFlight(flight *sessionFlight) {
+	select {
+	case <-flight.ctx.Done():
+		s.finishFlight(flight, flight.ctx.Err())
+		return
+	default:
+	}
 	assertion, err := s.assertion()
+	if err != nil {
+		err = assertionSourceError{err}
+	}
 	if err == nil {
 		select {
 		case <-flight.ctx.Done():
@@ -99,6 +115,10 @@ func (s *workloadSession) runFlight(flight *sessionFlight) {
 		}
 	}
 
+	s.finishFlight(flight, err)
+}
+
+func (s *workloadSession) finishFlight(flight *sessionFlight, err error) {
 	s.mu.Lock()
 	if s.flight == flight {
 		s.flight = nil
