@@ -3,7 +3,7 @@
 ## Status
 
 - Phase: authorized for local implementation planning
-- Current task: `PFF-002` pending authorization
+- Current task: `PFF-003` pending explicit authorization
 - Branch: `tfp-f-provider-workload-auth`
 - Base: `main` at `139bc0f8ced45c169975ae3f5c581583874ba444`
 - Delivery strategy: `feature-branch-chain`
@@ -169,7 +169,7 @@ Acceptance:
 
 Forecast: 280–420 authored lines.
 
-### PFF-002 — Usable initial workload authentication `[ ]`
+### PFF-002 — Usable initial workload authentication `[x]`
 
 Route: `delegated direct`.
 
@@ -295,7 +295,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | --- | --- | ---: | --- | --- | --- | --- |
 | Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
 | PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | approved and consumed: `review-af4bcea9f41b811e`; one informational body-read cancellation warning deferred to later work | `git revert 71a7cd2`; `git revert 97c9166` |
-| PFF-002 | pending | pending | pending | usable initial workload login and secret read | pending | revert PFF-002 work-unit commit(s) |
+| PFF-002 | `bf248f2`, `a603cbe`, `593a199` | 418, including the bounded correction | focused/full/race/vet/build/mod/gofmt/Windows compile/diff PASS | one initial workload login publishes a memory-only session; protected files reject FIFOs without blocking; the same client reads the namespaced secret with no whoami or fallback | approved and consumed: `review-ec31cc20a6e8cef4` | `git revert 593a199`; then `git revert a603cbe`; then `git revert bf248f2` |
 | PFF-003 | pending | pending | pending | focused concurrent session/expiry tests | pending | revert PFF-003 work-unit commit(s) |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
 
@@ -318,11 +318,11 @@ PFF-001 functional rollback authority is `git revert 97c9166`; documentation com
 - [x] Public schema, source policy, session policy, contract ownership, branch,
   delivery strategy, and work-unit boundaries frozen.
 - [x] PFF-001 — Internal workload exchange boundary.
-- [ ] PFF-002 — Usable initial workload authentication.
+- [x] PFF-002 — Usable initial workload authentication.
 - [ ] PFF-003 — Memory-only session and bounded reauthentication.
 - [ ] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
 
 ## Next step
 
-Await the PFF-001 RDD assessment. PFF-002 remains pending explicit
-authorization; do not expose workload configuration before then.
+PFF-002 is complete locally. Await explicit authorization before PFF-003;
+refresh and reauthentication remain out of scope until then.
