@@ -74,6 +74,9 @@ material without exposing secrets in the repository or command output.
   has been created.
 - Both GitHub Actions signing secrets are configured for the provider
   repository.
+- Work-unit commit: `a793ff8` (`docs(odd): record provider release signing
+  setup`). RDD classified it passive (`non_executable_only`), so no review was
+  due.
 
 ## Next step
 
