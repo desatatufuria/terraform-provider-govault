@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"os"
+	"strings"
 
+	govaultclient "github.com/desatatufuria/terraform-provider-govault/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -24,7 +27,8 @@ const (
 var _ provider.Provider = (*goVaultProvider)(nil)
 
 type goVaultProvider struct {
-	version string
+	version   string
+	lookupEnv func(string) (string, bool)
 }
 
 type providerModel struct {
@@ -37,7 +41,7 @@ type providerModel struct {
 // New returns a provider factory for Terraform protocol servers and tests.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
-		return &goVaultProvider{version: version}
+		return &goVaultProvider{version: version, lookupEnv: os.LookupEnv}
 	}
 }
 
@@ -48,7 +52,7 @@ func (p *goVaultProvider) Metadata(_ context.Context, _ provider.MetadataRequest
 
 func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Configure the GoVault provider. This scaffold validates non-secret connection selectors offline and does not connect to GoVault yet.",
+		Description: "Configure the GoVault provider with token bootstrap, verified TLS, and server-derived namespace authority.",
 		Attributes: map[string]schema.Attribute{
 			"address": schema.StringAttribute{
 				Description: "Base HTTPS address of the GoVault API.",
@@ -104,13 +108,44 @@ func (p *goVaultProvider) Configure(ctx context.Context, req provider.ConfigureR
 	if config.AuthMethod.ValueString() != supportedAuth {
 		resp.Diagnostics.AddError("Unsupported authentication method", "The provider currently supports only auth_method = \"token\".")
 	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	if config.TokenEnv.IsNull() {
 		config.TokenEnv = types.StringValue(defaultTokenEnv)
 	}
+	tokenEnv := config.TokenEnv.ValueString()
+	if strings.TrimSpace(tokenEnv) == "" {
+		resp.Diagnostics.AddError("Missing token environment selector", "The provider token_env must name exactly one environment variable.")
+		return
+	}
 
-	// A null token_env selects defaultTokenEnv when PHE-002 constructs a client.
-	// PHE-002 owns token lookup, TLS construction, and client configuration.
-	// This scaffold intentionally leaves provider data unset and performs no I/O.
+	lookupEnv := p.lookupEnv
+	if lookupEnv == nil {
+		lookupEnv = os.LookupEnv
+	}
+	token, exists := lookupEnv(tokenEnv)
+	if !exists || strings.TrimSpace(token) == "" {
+		resp.Diagnostics.AddError("Missing GoVault token", "The environment variable selected by token_env is not set or is empty.")
+		return
+	}
+
+	configuredClient, err := govaultclient.New(govaultclient.Config{
+		Address:    config.Address.ValueString(),
+		Token:      token,
+		CACertFile: config.CACertFile.ValueString(),
+	})
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid GoVault client configuration", err.Error())
+		return
+	}
+	if err := configuredClient.Authenticate(ctx); err != nil {
+		resp.Diagnostics.AddError("GoVault authentication failed", err.Error())
+		return
+	}
+
+	resp.EphemeralResourceData = configuredClient
 }
 
 func (p *goVaultProvider) DataSources(context.Context) []func() datasource.DataSource {

@@ -2,9 +2,16 @@ package provider
 
 import (
 	"context"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	govaultclient "github.com/desatatufuria/terraform-provider-govault/internal/client"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	providerschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -53,7 +60,7 @@ func TestSchemaContainsOnlyNonSecretSelectors(t *testing.T) {
 	}
 }
 
-func TestConfigureIsOfflineAndFailsClosed(t *testing.T) {
+func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
@@ -63,18 +70,6 @@ func TestConfigureIsOfflineAndFailsClosed(t *testing.T) {
 		caCertFile any
 		wantError  string
 	}{
-		"valid selectors": {
-			address:    "https://govault.example.com",
-			authMethod: "token",
-			tokenEnv:   "GOVAULT_TOKEN",
-			caCertFile: nil,
-		},
-		"null optional selectors": {
-			address:    "https://govault.example.com",
-			authMethod: "token",
-			tokenEnv:   nil,
-			caCertFile: nil,
-		},
 		"unsupported authentication": {
 			address:    "https://govault.example.com",
 			authMethod: "workload",
@@ -110,13 +105,23 @@ func TestConfigureIsOfflineAndFailsClosed(t *testing.T) {
 			caCertFile: nil,
 			wantError:  "Unknown provider configuration",
 		},
+		"empty token environment selector": {
+			address:    "https://govault.example.com",
+			authMethod: "token",
+			tokenEnv:   "",
+			caCertFile: nil,
+			wantError:  "Missing token environment selector",
+		},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			p := New("test")()
+			p := &goVaultProvider{version: "test", lookupEnv: func(string) (string, bool) {
+				t.Fatal("invalid local configuration must not read the environment")
+				return "", false
+			}}
 			s := providerSchema(t)
 			request := provider.ConfigureRequest{Config: configFor(s, test.address, test.authMethod, test.tokenEnv, test.caCertFile)}
 			var response provider.ConfigureResponse
@@ -126,16 +131,119 @@ func TestConfigureIsOfflineAndFailsClosed(t *testing.T) {
 			if response.DataSourceData != nil || response.ResourceData != nil || response.EphemeralResourceData != nil {
 				t.Fatal("scaffold must leave all provider data unset")
 			}
-			if test.wantError == "" {
-				if response.Diagnostics.HasError() {
-					t.Fatalf("unexpected diagnostics: %v", response.Diagnostics)
-				}
-				return
-			}
 			if !hasDiagnosticSummary(response.Diagnostics.Errors(), test.wantError) {
 				t.Fatalf("missing diagnostic %q in %v", test.wantError, response.Diagnostics)
 			}
 		})
+	}
+}
+
+func TestConfigureAuthenticatesUsingOnlySelectedEnvironment(t *testing.T) {
+	const token = "gv.selected-token"
+
+	tests := map[string]struct {
+		tokenEnv     any
+		lookup       func(string) (string, bool)
+		wantLookup   string
+		wantError    string
+		wantRequests int
+	}{
+		"default selector": {
+			tokenEnv:     nil,
+			lookup:       mapLookup(map[string]string{defaultTokenEnv: token}),
+			wantLookup:   defaultTokenEnv,
+			wantRequests: 1,
+		},
+		"explicit selector": {
+			tokenEnv:     "CUSTOM_GOVAULT_TOKEN",
+			lookup:       mapLookup(map[string]string{"CUSTOM_GOVAULT_TOKEN": token}),
+			wantLookup:   "CUSTOM_GOVAULT_TOKEN",
+			wantRequests: 1,
+		},
+		"no fallback": {
+			tokenEnv:     "CUSTOM_GOVAULT_TOKEN",
+			lookup:       mapLookup(map[string]string{defaultTokenEnv: token}),
+			wantLookup:   "CUSTOM_GOVAULT_TOKEN",
+			wantError:    "Missing GoVault token",
+			wantRequests: 0,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			var requestedEnv string
+			requests := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+					t.Errorf("authorization header = %q", got)
+				}
+				_, _ = w.Write([]byte(`{"namespace":"team-a"}`))
+			}))
+			defer server.Close()
+
+			caFile := writeServerCA(t, server)
+			p := &goVaultProvider{version: "test", lookupEnv: func(name string) (string, bool) {
+				requestedEnv = name
+				return test.lookup(name)
+			}}
+			s := providerSchema(t)
+			request := provider.ConfigureRequest{Config: configFor(s, server.URL, "token", test.tokenEnv, caFile)}
+			var response provider.ConfigureResponse
+
+			p.Configure(context.Background(), request, &response)
+
+			if requestedEnv != test.wantLookup {
+				t.Fatalf("environment lookup = %q, want %q", requestedEnv, test.wantLookup)
+			}
+			if requests != test.wantRequests {
+				t.Fatalf("requests = %d, want %d", requests, test.wantRequests)
+			}
+			if test.wantError != "" {
+				if !hasDiagnosticSummary(response.Diagnostics.Errors(), test.wantError) {
+					t.Fatalf("missing diagnostic %q in %v", test.wantError, response.Diagnostics)
+				}
+				return
+			}
+			if response.Diagnostics.HasError() {
+				t.Fatalf("unexpected diagnostics: %v", response.Diagnostics)
+			}
+			configuredClient, ok := response.EphemeralResourceData.(*govaultclient.Client)
+			if !ok || configuredClient.Namespace() != "team-a" {
+				t.Fatalf("unexpected ephemeral provider data: %#v", response.EphemeralResourceData)
+			}
+			if response.DataSourceData != nil || response.ResourceData != nil {
+				t.Fatal("PHE-002 must not configure state-bearing provider data")
+			}
+		})
+	}
+}
+
+func TestConfigureDiagnosticsRedactTokenAndResponseBody(t *testing.T) {
+	const (
+		token  = "gv.provider-canary"
+		secret = "provider-response-secret"
+	)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(token + " " + secret))
+	}))
+	defer server.Close()
+
+	p := &goVaultProvider{version: "test", lookupEnv: mapLookup(map[string]string{defaultTokenEnv: token})}
+	s := providerSchema(t)
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, "token", nil, writeServerCA(t, server))}
+	var response provider.ConfigureResponse
+	p.Configure(context.Background(), request, &response)
+
+	if !response.Diagnostics.HasError() {
+		t.Fatal("expected authentication diagnostic")
+	}
+	diagnostics := fmt.Sprint(response.Diagnostics)
+	for _, value := range []string{token, secret} {
+		if strings.Contains(diagnostics, value) {
+			t.Fatalf("diagnostics leaked %q: %s", value, diagnostics)
+		}
 	}
 }
 
@@ -175,4 +283,25 @@ func hasDiagnosticSummary(diagnostics diag.Diagnostics, want string) bool {
 		}
 	}
 	return false
+}
+
+func mapLookup(values map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	}
+}
+
+func writeServerCA(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+	certificate := server.Certificate()
+	if certificate == nil {
+		t.Fatal("test server has no certificate")
+	}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write CA: %v", err)
+	}
+	return path
 }

@@ -1,0 +1,168 @@
+package client
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+)
+
+const (
+	DefaultTimeout = 30 * time.Second
+	whoAmIPath     = "/auth/whoami"
+	maxWhoAmIBody  = 1 << 20
+)
+
+var (
+	ErrInvalidConfiguration = errors.New("invalid GoVault client configuration")
+	ErrUnauthorized         = errors.New("GoVault authentication rejected")
+	ErrForbidden            = errors.New("GoVault access forbidden")
+	ErrRequestFailed        = errors.New("GoVault request failed")
+	ErrUnexpectedStatus     = errors.New("GoVault returned an unexpected status")
+	ErrInvalidResponse      = errors.New("GoVault returned an invalid response")
+)
+
+type Config struct {
+	Address    string
+	Token      string
+	CACertFile string
+	Timeout    time.Duration
+}
+
+type Client struct {
+	baseURL    string
+	token      string
+	httpClient *http.Client
+
+	mu        sync.RWMutex
+	namespace string
+}
+
+type whoAmIResponse struct {
+	Namespace string `json:"namespace"`
+}
+
+func New(config Config) (*Client, error) {
+	baseURL, err := normalizeAddress(config.Address)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(config.Token) == "" || strings.IndexFunc(config.Token, unicode.IsSpace) >= 0 {
+		return nil, fmt.Errorf("%w: token is empty or malformed", ErrInvalidConfiguration)
+	}
+
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("%w: default HTTP transport is unavailable", ErrInvalidConfiguration)
+	}
+	transport := defaultTransport.Clone()
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if transport.TLSClientConfig != nil {
+		tlsConfig = transport.TLSClientConfig.Clone()
+		tlsConfig.MinVersion = tls.VersionTLS12
+	}
+	if config.CACertFile != "" {
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		pemData, err := os.ReadFile(config.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("%w: unable to read CA certificate file", ErrInvalidConfiguration)
+		}
+		if !roots.AppendCertsFromPEM(pemData) {
+			return nil, fmt.Errorf("%w: CA certificate file contains no certificates", ErrInvalidConfiguration)
+		}
+		tlsConfig.RootCAs = roots
+	}
+	transport.TLSClientConfig = tlsConfig
+
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+
+	return &Client{
+		baseURL: baseURL,
+		token:   config.Token,
+		httpClient: &http.Client{
+			Transport: transport,
+			Timeout:   timeout,
+		},
+	}, nil
+}
+
+func (c *Client) Authenticate(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+whoAmIPath, nil)
+	if err != nil {
+		return ErrRequestFailed
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Accept", "application/json")
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusForbidden:
+		return ErrForbidden
+	default:
+		return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, response.StatusCode)
+	}
+
+	var payload whoAmIResponse
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxWhoAmIBody))
+	if err := decoder.Decode(&payload); err != nil {
+		return ErrInvalidResponse
+	}
+	payload.Namespace = strings.TrimSpace(payload.Namespace)
+	if payload.Namespace == "" {
+		return ErrInvalidResponse
+	}
+
+	c.mu.Lock()
+	c.namespace = payload.Namespace
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) Namespace() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.namespace
+}
+
+func normalizeAddress(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%w: address must be an absolute HTTPS URL", ErrInvalidConfiguration)
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func sanitizedRequestError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("GoVault request canceled: %w", context.Canceled)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("GoVault request timed out: %w", context.DeadlineExceeded)
+	default:
+		return ErrRequestFailed
+	}
+}

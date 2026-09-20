@@ -58,7 +58,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
   - Add protocol-6 provider server, provider metadata/schema/configuration, provider factories, Registry protocol manifest, minimal examples, and repository documentation.
   - Keep schema free of secret-valued attributes and reject unsupported authentication methods or unsafe unknown configuration.
   - Prove exact Registry address, Terraform 1.10 floor documentation, offline validation, and nil provider-data safety.
-- [-] **PHE-002 — Bounded GoVault token client**
+- [x] **PHE-002 — Bounded GoVault token client**
   - Read the token only from the explicitly named environment variable.
   - Build a cancellation-aware, timeout-bounded HTTP client with default TLS verification and optional PEM CA file.
   - Call `/auth/whoami`, derive the session namespace, and translate stable error classes without copying response bodies, tokens, or secret values into diagnostics.
@@ -94,7 +94,12 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-001 verification: focused provider and protocol/repository tests, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `gofmt`, `go mod verify`, `go mod tidy -diff`, and `git diff --check` pass. The direct protocol test uses `providerserver.NewProtocol6WithError` and `GetProviderSchema`; no Terraform acceptance runtime is claimed.
 - PHE-001 RDD: frozen candidate `36646ff` was approved and acknowledged under `review-5f66995eb36334c6`. Reliability finding `R3-MODULE-TIDY` identified that the directly imported `terraform-plugin-go` module was classified as indirect; the PHE-001 closure correction ran `go mod tidy`, made it direct, and left `go mod tidy -diff` empty.
 - PHE-001 rollback: revert the closure correction first, then revert `36646ff`; GoVault remains unchanged.
+- PHE-002 contract verification: GoVault registers `GET /auth/whoami` on the bearer-authenticated `authSession` group in `config/wiring.go`; `internal/api/middleware/auth.go` consumes `Authorization: Bearer <token>`, and `internal/api/handlers/whoami.go` returns the normalized principal namespace. This matches the frozen provider contract.
+- PHE-002 implementation: the provider reads only the environment variable selected by `token_env` (default `GOVAULT_TOKEN`), rejects missing values without fallback, builds an HTTPS-only client with normal hostname verification, optional PEM CA roots, TLS 1.2 minimum, and a 30-second timeout, then derives namespace authority from `/auth/whoami`. Only ephemeral provider data is configured; no resource or secret read was added.
+- PHE-002 safety evidence: tests cover selected/default environment lookup, no fallback, custom and untrusted CA behavior, hostname mismatch, timeout, caller cancellation, bearer request shape, namespace derivation, stable status/response failures, and redaction of token, transport, and response-body canaries from client errors and provider diagnostics.
+- PHE-002 verification: focused client/provider/repository tests, repeated focused tests, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `gofmt`, `go mod verify`, `go mod tidy -diff`, generated documentation, and `git diff --check` pass. No Terraform acceptance runtime is claimed in PHE-002.
+- PHE-002 rollback: revert its work-unit commit; PHE-001 and GoVault remain unchanged.
 
 ## Next step
 
-Implement PHE-002 only. Keep PHE-003 pending until the bounded token client work unit is verified, committed, and assessed.
+Request explicit authorization before implementing PHE-003. Its ephemeral secret behavior and Terraform 1.10/1.11 acceptance evidence remain pending.

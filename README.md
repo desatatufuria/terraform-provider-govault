@@ -1,6 +1,6 @@
 # Terraform Provider for GoVault
 
-This repository contains the standalone Terraform provider for GoVault. The current bootstrap exposes only offline provider configuration; it does not read tokens, make network requests, or expose secret resources yet.
+This repository contains the standalone Terraform provider for GoVault. It supports bounded token bootstrap and verified TLS configuration. Secret resources are not exposed yet.
 
 ## Requirements
 
@@ -29,7 +29,11 @@ provider "govault" {
 }
 ```
 
-`token_env` names the environment variable that a later implementation phase will read; it is not token material. There is deliberately no inline token argument. `ca_cert_file` may select a custom PEM CA file, but this scaffold does not read it yet.
+`token_env` names the only environment variable read for token bootstrap and defaults to `GOVAULT_TOKEN` when omitted. There is deliberately no inline token argument or fallback to another environment variable.
+
+Provider configuration requires HTTPS, performs normal certificate and hostname verification, and may add the PEM certificates selected by `ca_cert_file` to the system trust roots. Requests use a 30-second timeout and honor Terraform cancellation. During configuration the provider calls `GET /auth/whoami` with bearer authentication and retains the namespace returned by GoVault for future ephemeral operations; the namespace is not user-selectable.
+
+Authentication diagnostics contain stable error classes and HTTP status codes only. GoVault response bodies and token values are not copied into diagnostics.
 
 ## Development
 
