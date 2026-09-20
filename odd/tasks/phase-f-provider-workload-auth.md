@@ -294,7 +294,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | Task | Commit | Authored lines | Checks | Runtime | RDD | Rollback |
 | --- | --- | ---: | --- | --- | --- | --- |
 | Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
-| PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | assessment pending | `git revert 97c9166` |
+| PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | approved and consumed: `review-af4bcea9f41b811e`; one informational body-read cancellation warning deferred to later work | `git revert 71a7cd2`; `git revert 97c9166` |
 | PFF-002 | pending | pending | pending | usable initial workload login and secret read | pending | revert PFF-002 work-unit commit(s) |
 | PFF-003 | pending | pending | pending | focused concurrent session/expiry tests | pending | revert PFF-003 work-unit commit(s) |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
