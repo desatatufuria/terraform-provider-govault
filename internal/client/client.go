@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -65,12 +66,8 @@ func New(config Config) (*Client, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: default HTTP transport is unavailable", ErrInvalidConfiguration)
 	}
-	transport := defaultTransport.Clone()
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if transport.TLSClientConfig != nil {
-		tlsConfig = transport.TLSClientConfig.Clone()
-		tlsConfig.MinVersion = tls.VersionTLS12
-	}
+	transport := cloneVerifiedTransport(defaultTransport)
+	tlsConfig := transport.TLSClientConfig
 	if config.CACertFile != "" {
 		roots, err := x509.SystemCertPool()
 		if err != nil || roots == nil {
@@ -98,6 +95,9 @@ func New(config Config) (*Client, error) {
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}, nil
 }
@@ -126,9 +126,16 @@ func (c *Client) Authenticate(ctx context.Context) error {
 		return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, response.StatusCode)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxWhoAmIBody+1))
+	if err != nil || len(body) > maxWhoAmIBody {
+		return ErrInvalidResponse
+	}
 	var payload whoAmIResponse
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxWhoAmIBody))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&payload); err != nil {
+		return ErrInvalidResponse
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return ErrInvalidResponse
 	}
 	payload.Namespace = strings.TrimSpace(payload.Namespace)
@@ -140,6 +147,12 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	c.namespace = payload.Namespace
 	c.mu.Unlock()
 	return nil
+}
+
+func cloneVerifiedTransport(base *http.Transport) *http.Transport {
+	transport := base.Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return transport
 }
 
 func (c *Client) Namespace() string {

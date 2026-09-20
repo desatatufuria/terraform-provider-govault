@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/pem"
 	"errors"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -137,6 +139,45 @@ func TestAuthenticateRedactsSensitiveFailures(t *testing.T) {
 	assertRedacted(t, err, token, secret)
 }
 
+func TestAuthenticateRejectsRedirectWithoutForwardingToken(t *testing.T) {
+	t.Parallel()
+
+	var redirectedRequests atomic.Int32
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirectedRequests.Add(1)
+	}))
+	defer redirectTarget.Close()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, server.URL, "gv.redirect-canary", time.Second)
+	if err := client.Authenticate(context.Background()); !errors.Is(err, ErrUnexpectedStatus) {
+		t.Fatalf("error = %v, want unexpected status", err)
+	}
+	if got := redirectedRequests.Load(); got != 0 {
+		t.Fatalf("redirect target received %d requests, want 0", got)
+	}
+}
+
+func TestCloneVerifiedTransportIgnoresAmbientUnsafeTLS(t *testing.T) {
+	t.Parallel()
+
+	ambient := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // Deliberately unsafe negative control.
+	transport := cloneVerifiedTransport(ambient)
+	if transport.TLSClientConfig == ambient.TLSClientConfig {
+		t.Fatal("TLS configuration must not alias the ambient transport")
+	}
+	if transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("client inherited ambient InsecureSkipVerify")
+	}
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("minimum TLS version = %d, want TLS 1.2", transport.TLSClientConfig.MinVersion)
+	}
+}
+
 func TestAuthenticateClassifiesServerFailures(t *testing.T) {
 	t.Parallel()
 
@@ -149,6 +190,9 @@ func TestAuthenticateClassifiesServerFailures(t *testing.T) {
 		"forbidden":         {status: http.StatusForbidden, body: `{"error":"denied"}`, want: ErrForbidden},
 		"invalid JSON":      {status: http.StatusOK, body: `{`, want: ErrInvalidResponse},
 		"missing namespace": {status: http.StatusOK, body: `{}`, want: ErrInvalidResponse},
+		"trailing JSON":     {status: http.StatusOK, body: `{"namespace":"team-a"}{}`, want: ErrInvalidResponse},
+		"trailing content":  {status: http.StatusOK, body: `{"namespace":"team-a"}secret`, want: ErrInvalidResponse},
+		"oversized body":    {status: http.StatusOK, body: `{"namespace":"team-a"}` + strings.Repeat(" ", maxWhoAmIBody), want: ErrInvalidResponse},
 	}
 
 	for name, test := range tests {
