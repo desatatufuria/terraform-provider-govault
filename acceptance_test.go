@@ -14,14 +14,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	acceptanceTokenCanary       = "gv-acceptance-token-canary"
-	acceptanceSecretCanary      = "gv-acceptance-secret-canary"
-	acceptanceDiagnosticLimit   = 8 * 1024
-	acceptanceDiagnosticOmitted = "\n...[diagnostic truncated]...\n"
+	acceptanceTokenCanary     = "gv-acceptance-token-canary"
+	acceptanceSecretCanary    = "gv-acceptance-secret-canary"
+	acceptanceCaptureLimit    = 64 * 1024
+	acceptanceCaptureOmitted  = "\n...[output omitted]...\n"
+	acceptanceUnknownCommand  = "external command"
+	acceptanceUnknownFailure  = "execution failure"
+	acceptanceNoSafeDiagnosis = "no allowlisted diagnostic"
 )
+
+var acceptanceDiagnosticSignals = []string{
+	"Invalid character",
+	"Invalid single-argument block definition",
+	"Unable to read GoVault secret",
+	"HTTP 500",
+}
 
 func TestTerraformEphemeralAcceptance(t *testing.T) {
 	binaries := map[string]string{"1.10": os.Getenv("TF_ACC_TERRAFORM_1_10"), "1.11": os.Getenv("TF_ACC_TERRAFORM_1_11")}
@@ -101,6 +112,9 @@ ephemeral "govault_secret" "canary" { path = "app/key" }
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	failureOutput, failureErr, _ := executeAcceptanceCommand(ctx, dir, env, binary, "plan", "-input=false")
 	cancel()
+	if failureOutput.protectedCanary {
+		t.Fatal("terraform plan emitted a protected canary")
+	}
 	if failureErr == nil {
 		t.Fatal("secret-bearing server failure unexpectedly passed")
 	}
@@ -123,13 +137,19 @@ ephemeral "govault_secret" "canary" { path = "app/key" }
 	}
 }
 
-type acceptanceOutput struct{ stdout, stderr string }
+type acceptanceOutput struct {
+	stdout, stderr  string
+	protectedCanary bool
+}
 
 func runAcceptanceCommand(t *testing.T, dir string, env []string, name string, args ...string) acceptanceOutput {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	output, err, class := executeAcceptanceCommand(ctx, dir, env, name, args...)
+	if output.protectedCanary {
+		t.Fatalf("%s emitted a protected canary", safeAcceptanceCommand(name, args))
+	}
 	if err != nil {
 		t.Fatal(formatAcceptanceFailure(name, args, class, output))
 	}
@@ -137,33 +157,63 @@ func runAcceptanceCommand(t *testing.T, dir string, env []string, name string, a
 }
 
 func formatAcceptanceFailure(name string, args []string, class string, output acceptanceOutput) string {
-	command := filepath.Base(name)
-	if len(args) > 0 {
-		command += " " + args[0]
+	signals := make([]string, 0, len(acceptanceDiagnosticSignals))
+	combined := output.stderr + "\n" + output.stdout
+	for _, signal := range acceptanceDiagnosticSignals {
+		if strings.Contains(combined, signal) {
+			signals = append(signals, signal)
+		}
 	}
-	diagnostic := strings.TrimSpace(output.stderr + "\n" + output.stdout)
-	diagnostic = strings.NewReplacer(
-		acceptanceTokenCanary, "[REDACTED TOKEN CANARY]",
-		acceptanceSecretCanary, "[REDACTED SECRET CANARY]",
-	).Replace(diagnostic)
-	if len(diagnostic) > acceptanceDiagnosticLimit {
-		half := (acceptanceDiagnosticLimit - len(acceptanceDiagnosticOmitted)) / 2
-		diagnostic = diagnostic[:half] + acceptanceDiagnosticOmitted + diagnostic[len(diagnostic)-half:]
+	if len(signals) == 0 {
+		signals = append(signals, acceptanceNoSafeDiagnosis)
 	}
-	if diagnostic == "" {
-		diagnostic = "[no command output]"
+	return safeAcceptanceCommand(name, args) + " failed (" + safeAcceptanceClass(class) + "); diagnostics: " + strings.Join(signals, ", ")
+}
+
+func safeAcceptanceCommand(name string, args []string) string {
+	command := acceptanceUnknownCommand
+	switch filepath.Base(name) {
+	case "terraform":
+		command = "terraform"
+	case "go":
+		command = "go"
 	}
-	return command + " failed (" + class + "):\n" + diagnostic
+	if len(args) == 0 {
+		return command
+	}
+	allowed := map[string]bool{"apply": true, "build": true, "plan": true, "show": true, "state": true, "version": true}
+	if allowed[args[0]] {
+		return command + " " + args[0]
+	}
+	return command
+}
+
+func safeAcceptanceClass(class string) string {
+	if class == "timeout" || class == acceptanceUnknownFailure {
+		return class
+	}
+	const prefix = "exit status "
+	if strings.HasPrefix(class, prefix) {
+		status, err := strconv.Atoi(strings.TrimPrefix(class, prefix))
+		if err == nil && status >= 0 && status <= 255 {
+			return prefix + strconv.Itoa(status)
+		}
+	}
+	return acceptanceUnknownFailure
 }
 
 func executeAcceptanceCommand(ctx context.Context, dir string, env []string, name string, args ...string) (acceptanceOutput, error, string) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir, command.Env = dir, env
 	configureAcceptanceCommand(command)
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
+	stdout, stderr := newAcceptanceCapture(), newAcceptanceCapture()
+	command.Stdout, command.Stderr = stdout, stderr
 	err := command.Run()
-	output := acceptanceOutput{stdout: stdout.String(), stderr: stderr.String()}
+	output := acceptanceOutput{
+		stdout:          stdout.String(),
+		stderr:          stderr.String(),
+		protectedCanary: stdout.protectedCanary || stderr.protectedCanary,
+	}
 	if err != nil {
 		class := "execution failure"
 		if ctx.Err() != nil {
@@ -174,6 +224,80 @@ func executeAcceptanceCommand(ctx context.Context, dir string, env []string, nam
 		return output, err, class
 	}
 	return output, nil, "success"
+}
+
+type acceptanceCapture struct {
+	head, tail      []byte
+	scanTail        []byte
+	total           int64
+	protectedCanary bool
+}
+
+func newAcceptanceCapture() *acceptanceCapture {
+	return &acceptanceCapture{
+		head: make([]byte, 0, acceptanceCaptureLimit/2),
+		tail: make([]byte, 0, acceptanceCaptureLimit/2),
+	}
+}
+
+func (c *acceptanceCapture) Write(p []byte) (int, error) {
+	written := len(p)
+	c.total += int64(written)
+	c.scanProtectedCanaries(p)
+
+	headRemaining := cap(c.head) - len(c.head)
+	if headRemaining > 0 {
+		keep := min(headRemaining, len(p))
+		c.head = append(c.head, p[:keep]...)
+		p = p[keep:]
+	}
+	if len(p) > 0 {
+		tailLimit := acceptanceCaptureLimit / 2
+		if len(p) >= tailLimit {
+			c.tail = append(c.tail[:0], p[len(p)-tailLimit:]...)
+		} else {
+			if overflow := len(c.tail) + len(p) - tailLimit; overflow > 0 {
+				copy(c.tail, c.tail[overflow:])
+				c.tail = c.tail[:len(c.tail)-overflow]
+			}
+			c.tail = append(c.tail, p...)
+		}
+	}
+	return written, nil
+}
+
+func (c *acceptanceCapture) scanProtectedCanaries(p []byte) {
+	canaries := [][]byte{[]byte(acceptanceTokenCanary), []byte(acceptanceSecretCanary)}
+	for _, canary := range canaries {
+		boundarySize := min(len(p), len(canary)-1)
+		boundary := append(append([]byte(nil), c.scanTail...), p[:boundarySize]...)
+		if bytes.Contains(p, canary) || bytes.Contains(boundary, canary) {
+			c.protectedCanary = true
+		}
+	}
+	keep := max(len(acceptanceTokenCanary), len(acceptanceSecretCanary)) - 1
+	if len(p) >= keep {
+		c.scanTail = append(c.scanTail[:0], p[len(p)-keep:]...)
+	} else {
+		c.scanTail = append(c.scanTail, p...)
+		if len(c.scanTail) > keep {
+			c.scanTail = append(c.scanTail[:0], c.scanTail[len(c.scanTail)-keep:]...)
+		}
+	}
+}
+
+func (c *acceptanceCapture) String() string {
+	data := append(append([]byte(nil), c.head...), c.tail...)
+	if c.total > int64(len(data)) {
+		data = append(append(append([]byte(nil), c.head...), acceptanceCaptureOmitted...), c.tail...)
+	}
+	data = bytes.ToValidUTF8(data, []byte("�"))
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= ' ' && r != 0x7f {
+			return r
+		}
+		return -1
+	}, string(data))
 }
 
 func collectAcceptanceSurfaces(roots ...string) ([]string, error) {
@@ -249,27 +373,68 @@ func TestReplaceEnvRemovesInheritedDuplicates(t *testing.T) {
 	}
 }
 
-func TestFormatAcceptanceFailureIsUsefulBoundedAndRedacted(t *testing.T) {
-	padding := strings.Repeat("x", acceptanceDiagnosticLimit)
+func TestFormatAcceptanceFailureAllowsOnlyStructuredSignals(t *testing.T) {
+	unknownSecret := "unregistered-secret-value"
 	got := formatAcceptanceFailure(
-		"/verified/terraform",
-		[]string{"plan", "-input=false"},
-		"exit status 1",
+		"/hostile/"+unknownSecret,
+		[]string{"plan\x1b[31m" + unknownSecret},
+		"exit status 1\x00"+unknownSecret,
 		acceptanceOutput{
-			stderr: "useful failure before " + acceptanceTokenCanary + padding + acceptanceSecretCanary + " useful failure after",
+			stderr: "\xff\x1b[31mInvalid character\x00 " + acceptanceTokenCanary + " " + acceptanceSecretCanary + " " + unknownSecret,
 		},
 	)
-	for _, want := range []string{"terraform plan failed (exit status 1)", "useful failure before", "useful failure after", acceptanceDiagnosticOmitted} {
+	for _, want := range []string{acceptanceUnknownCommand, acceptanceUnknownFailure, "Invalid character"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("diagnostic missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{acceptanceTokenCanary, acceptanceSecretCanary} {
+	for _, forbidden := range []string{acceptanceTokenCanary, acceptanceSecretCanary, unknownSecret, "\x1b", "\x00"} {
 		if strings.Contains(got, forbidden) {
-			t.Fatalf("diagnostic leaked a canary")
+			t.Fatalf("diagnostic leaked unsafe output")
 		}
 	}
-	if len(got) > acceptanceDiagnosticLimit+128 {
-		t.Fatalf("diagnostic length = %d", len(got))
+	if !utf8.ValidString(got) {
+		t.Fatal("diagnostic is not valid UTF-8")
+	}
+}
+
+func TestAcceptanceCaptureIsBoundedSanitizedAndScansEntireStream(t *testing.T) {
+	capture := newAcceptanceCapture()
+	large := append([]byte("\xff\x1b[31m"), bytes.Repeat([]byte("x"), acceptanceCaptureLimit*2)...)
+	if _, err := capture.Write(large); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Write([]byte("gv-acceptance-token-")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Write([]byte("canary tail Invalid character\x00")); err != nil {
+		t.Fatal(err)
+	}
+	got := capture.String()
+	if len(got) > acceptanceCaptureLimit+len(acceptanceCaptureOmitted)+len("�") {
+		t.Fatalf("capture length = %d", len(got))
+	}
+	if !capture.protectedCanary {
+		t.Fatal("capture missed a canary split across writes")
+	}
+	if !utf8.ValidString(got) || strings.ContainsAny(got, "\x00\x1b\x7f") {
+		t.Fatal("capture retained invalid UTF-8 or terminal controls")
+	}
+	if !strings.Contains(got, "Invalid character") || !strings.Contains(got, acceptanceCaptureOmitted) {
+		t.Fatal("capture did not preserve bounded tail evidence")
+	}
+}
+
+func TestAcceptanceCaptureDetectsEveryCanaryAcrossWrites(t *testing.T) {
+	for _, canary := range []string{acceptanceTokenCanary, acceptanceSecretCanary} {
+		t.Run(canary, func(t *testing.T) {
+			capture := newAcceptanceCapture()
+			middle := len(canary) / 2
+			_, _ = capture.Write([]byte(canary[:middle]))
+			_, _ = capture.Write([]byte(canary[middle:]))
+			if !capture.protectedCanary {
+				t.Fatal("capture missed a protected canary split across writes")
+			}
+		})
 	}
 }
