@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Terraform for documentation generation
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          mapfile -t files < <(git ls-files '*.go')
+          unformatted="$(gofmt -l "${files[@]}")"
+          test -z "${unformatted}" || {
+            printf 'Unformatted Go files:\n%s\n' "${unformatted}"
+            exit 1
+          }
+
+      - name: Check generated documentation
+        run: |
+          go generate ./...
+          git diff --exit-code
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test with race detector
+        run: go test -race ./...
+
+      - name: Build
+        run: go build ./...
+
+  acceptance:
+    name: Terraform ${{ matrix.terraform }} acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - terraform: 1.10.5
+            acceptance_env: TF_ACC_TERRAFORM_1_10
+          - terraform: 1.11.4
+            acceptance_env: TF_ACC_TERRAFORM_1_11
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+
+      - name: Select pinned acceptance binary
+        shell: bash
+        run: |
+          terraform_path="$(command -v terraform)"
+          test -x "${terraform_path}"
+          printf '%s=%s\n' '${{ matrix.acceptance_env }}' "${terraform_path}" >> "${GITHUB_ENV}"
+
+      - name: Run acceptance tests
+        run: go test -count=1 -run '^TestTerraformEphemeralAcceptance$' .
