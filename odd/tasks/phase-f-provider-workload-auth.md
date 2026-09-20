@@ -3,7 +3,7 @@
 ## Status
 
 - Phase: authorized for local implementation planning
-- Current task: `PFF-001` pending
+- Current task: `PFF-002` pending authorization
 - Branch: `tfp-f-provider-workload-auth`
 - Base: `main` at `139bc0f8ced45c169975ae3f5c581583874ba444`
 - Delivery strategy: `feature-branch-chain`
@@ -144,7 +144,7 @@ Terraform provider configuration
 
 ## Work units
 
-### PFF-001 — Internal workload exchange boundary `[ ]`
+### PFF-001 — Internal workload exchange boundary `[x]`
 
 Route: `delegated direct`.
 
@@ -294,7 +294,7 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | Task | Commit | Authored lines | Checks | Runtime | RDD | Rollback |
 | --- | --- | ---: | --- | --- | --- | --- |
 | Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
-| PFF-001 | pending | pending | pending | focused fake-server protocol tests; schema remains hidden | pending | revert PFF-001 work-unit commit(s) |
+| PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | assessment pending | `git revert 97c9166` |
 | PFF-002 | pending | pending | pending | usable initial workload login and secret read | pending | revert PFF-002 work-unit commit(s) |
 | PFF-003 | pending | pending | pending | focused concurrent session/expiry tests | pending | revert PFF-003 work-unit commit(s) |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
@@ -316,13 +316,12 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
   GoVault Phase C.
 - [x] Public schema, source policy, session policy, contract ownership, branch,
   delivery strategy, and work-unit boundaries frozen.
-- [ ] PFF-001 — Internal workload exchange boundary.
+- [x] PFF-001 — Internal workload exchange boundary.
 - [ ] PFF-002 — Usable initial workload authentication.
 - [ ] PFF-003 — Memory-only session and bounded reauthentication.
 - [ ] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
 
 ## Next step
 
-Implement only `PFF-001` under the delegated-direct route. Do not begin PFF-002
-until PFF-001 has a committed candidate, recorded checks, and the required RDD
-assessment outcome.
+Await the PFF-001 RDD assessment. PFF-002 remains pending explicit
+authorization; do not expose workload configuration before then.
