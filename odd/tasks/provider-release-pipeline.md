@@ -96,7 +96,10 @@ Registry.
       1.11.4 (8.129s and 7.738s respectively).
     - Rollback boundary: remove `.github/workflows/ci.yml`; no provider runtime
       behavior or generated documentation changes were made.
-    - Work-unit commit intent: `ci(provider): add pinned validation workflow`.
+    - Work-unit commit: `eac3a9d312bbd7f1471d3594a0a2685f6e67c3b1`
+      (`ci(provider): add pinned validation workflow`).
+    - RDD outcome: user declined review for this exact candidate; ordinary
+      repository policy applied.
 
 - [x] **PRP-002 — Signed release packaging**
   - Add GoReleaser v2 packaging with Registry-compatible archive names,
@@ -122,6 +125,10 @@ Registry.
     - Runtime harness: local cross-platform snapshot completed in 2m2s.
     - Rollback: remove `.goreleaser.yml` and `.github/workflows/release.yml`,
       and revert the `dist/` ignore entry; provider behavior is unchanged.
+    - Work-unit commit: `c8136ac1678a53a11b459041ab8a40d2ad8ab329`
+      (`ci(provider): add signed release packaging`).
+    - RDD outcome: user declined review for this exact candidate; ordinary
+      repository policy applied.
 
 - [x] **PRP-003 — Operator documentation and final verification**
   - Document immutable tag/release procedure, required GitHub secrets, expected
@@ -166,7 +173,9 @@ Registry.
       cross-platform GoReleaser snapshot exercised the applicable boundaries.
     - Rollback boundary: remove the `Publishing a release` section from
       `README.md`; CI, packaging, and provider runtime behavior are unchanged.
-    - Work-unit commit intent: `docs(release): document provider publication`.
+    - Work-unit commit: `bfefca7fa59c61520c5794b73f8bd988015530d8`
+      (`docs(release): document provider publication`).
+    - RDD outcome: passive (`non_executable_only`); no review was due.
 
 ## Progress
 
@@ -182,9 +191,9 @@ Registry.
 - PRP-002 packaging and local snapshot validation completed without publishing.
 - PRP-003 operator procedure and full local verification completed without any
   remote mutation or use of release signing material.
-- Final feature diff: 510 authored lines (510 additions, no deletions), excluding
-  ignored snapshot artifacts. The user-approved `single-pr` exception applies
-  to the complete feature.
+- Final feature diff before this ledger-only closure: 510 authored lines (510
+  additions, no deletions), excluding ignored snapshot artifacts. The
+  user-approved `single-pr` exception applies to the complete feature.
 
 ## Next step
 
