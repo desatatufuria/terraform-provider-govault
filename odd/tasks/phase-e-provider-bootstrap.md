@@ -44,7 +44,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 
 - Forecast: 900–1,300 authored changed lines across three cohesive work units.
 - Delivery strategy: `feature-branch-chain`.
-- Local branch: `tfp-e-provider-bootstrap`, created from empty repository baseline `02c3a98`.
+- Source branch `tfp-e-provider-bootstrap`, created from empty repository baseline `02c3a98`, was integrated locally into `main` by merge `693e1ed`.
 - PHE-001 route: delegated direct; mapping, preparation, and writer triggers apply because the scaffold spans multiple non-trivial files.
 - PHE-002 route: delegated direct; security-sensitive client behavior spans provider and HTTP boundaries.
 - PHE-003 route: delegated direct; resource, acceptance, docs, and leak evidence span multiple files.
@@ -80,7 +80,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - Secret paths containing `/` are transmitted as query values, and omitted version means latest while non-positive versions fail locally.
 - TLS fails closed without a trusted CA and on hostname mismatch; explicit custom CA, cancellation, and timeout behavior are tested.
 - Terraform 1.10 and 1.11 acceptance evidence is pinned and reproducible before Phase E can close.
-- Rollback removes only the unreleased provider branch; GoVault remains unchanged.
+- Rollback of the local integration is `git revert -m 1 693e1ed` on `main`; its inverse diff restores the empty baseline tree `4b825dc642cb6eb9a060e54bf8d69288fbee4904`, and GoVault remains unchanged. This command is documented only and has not been executed.
 
 ## Evidence and progress
 
@@ -88,7 +88,7 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - GoVault delivery plan: `docs/terraform-provider-govault-delivery-plan.md`, Phase E.
 - Verified backend boundary: bearer middleware, `/auth/whoami`, and namespaced slash-safe secret reads already exist in GoVault.
 - Official HashiCorp documentation confirms protocol 6 provider servers and Terraform 1.10 ephemeral resources; protocol compatibility alone does not provide the product's no-state guarantee.
-- Repository gate: local repository initialized without a remote at baseline `02c3a98`; implementation branch `tfp-e-provider-bootstrap` is active.
+- Repository gate: local repository initialized without a remote at baseline `02c3a98`; merge `693e1ed` integrates source head `5da7655` into local `main`, and both share tree `016af643e79aad726258f24e9f3bad35313ed55a`.
 - CodeGraph initialized for this repository before structural work.
 - PHE-001 implementation: `36646ff` (`feat(provider): scaffold protocol 6 provider`), 12 files and 676 changed lines including generated `go.sum`; protocol-6 scaffold, non-secret provider schema, manifest, examples, generated documentation, and offline configuration tests.
 - PHE-001 verification: focused provider and protocol/repository tests, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `gofmt`, `go mod verify`, `go mod tidy -diff`, and `git diff --check` pass. The direct protocol test uses `providerserver.NewProtocol6WithError` and `GetProviderSchema`; no Terraform acceptance runtime is claimed.
@@ -115,8 +115,9 @@ It does not authorize a remote repository, push, pull request, release, GoVault 
 - PHE-003 runtime result: both Terraform 1.10.5 and 1.11.4 matrix cases pass. The preserved log `/home/furia/.cache/govault-terraform-acceptance/phe-003-runtime-matrix-fixture-fix.log` has SHA-256 `2806b275af779c3bef82425a637ab9df9e15e5f2ca9f88501978b90e2bdcb717` and contains no protected token or secret canaries.
 - PHE-003 state-safety surfaces: the harness exercises `plan`, plan JSON via `show -json`, `apply`, `state pull`, the expected secret-bearing HTTP 500 path, Terraform stdout/stderr and trace log, the complete temporary artifact tree, and repository README/docs/examples. Canary scans pass, and the negative HTTP 500 path proves `Ephemeral Open` reaches the GoVault read boundary.
 - PHE-003 final RDD: lineage `review-d2b689f736515394` reviewed candidate `d946466` and reached `APPROVED`; its approval was acknowledged and the authority consumed. Non-blocking follow-ups are stronger formal provenance binding between the receipt, candidate, exact binary hashes, command, and log, plus an explicit successful-read counter in the positive acceptance path.
+- Phase E integration RDD: lineage `review-7487aee00d19db1c` found `R3-POST-MERGE-ROLLBACK` in the original merge candidate. This bounded ledger correction records the effective first-parent merge rollback; its final verdict is intentionally not preclaimed before same-lineage re-review.
 - Phase E is complete locally. This does not authorize or claim a remote repository, push, pull request, release, Phase F, or OpenTofu certification.
 
 ## Next step
 
-Phase E is complete locally. The only next step is the user's decision about integration and delivery; Phase F and remote operations remain unopened and unauthorized.
+Phase E is integrated locally. Complete the same-lineage correction review before any delivery decision; Phase F and remote operations remain unopened and unauthorized.
