@@ -110,7 +110,9 @@ Registry.
     - Reverified with the exact Go 1.25.8 toolchain: generation produced no
       documentation drift; vet, unit, race, and build checks passed; Terraform
       1.10.5 and 1.11.4 acceptance passed independently (8.319s and 7.280s).
-    - Correction commit intent: `fix(ci): align Go toolchain floor`.
+    - Correction commit: `a9faaf7b` (`fix(ci): align Go toolchain floor`).
+    - Correction RDD outcome: medium configuration change, under the review
+      budget; no review was due.
 
 - [x] **PRP-002 — Signed release packaging**
   - Add GoReleaser v2 packaging with Registry-compatible archive names,
