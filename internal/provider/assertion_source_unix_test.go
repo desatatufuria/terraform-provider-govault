@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"golang.org/x/sys/unix"
 )
 
 func TestProtectedAssertionFilePolicy(t *testing.T) {
@@ -31,6 +33,24 @@ func TestProtectedAssertionFilePolicy(t *testing.T) {
 	}
 	if _, err := readProtectedAssertionFile(secure); err == nil {
 		t.Fatal("group-readable file must fail closed")
+	}
+}
+
+func TestProtectedAssertionFIFOIsRejectedWithoutBlocking(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "assertion.fifo")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { _, err := readProtectedAssertionFile(path); result <- err }()
+	select {
+	case err := <-result:
+		const want = "workload assertion file must be regular, private, and within the size limit"
+		if err == nil || err.Error() != want {
+			t.Fatalf("FIFO error = %v, want %q", err, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FIFO read blocked")
 	}
 }
 

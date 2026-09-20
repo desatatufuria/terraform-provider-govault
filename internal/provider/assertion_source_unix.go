@@ -11,7 +11,7 @@ import (
 )
 
 func readProtectedAssertionFile(path string) (string, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("unable to open protected workload assertion file")
 	}
