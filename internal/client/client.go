@@ -22,6 +22,7 @@ const (
 	DefaultTimeout = 30 * time.Second
 	whoAmIPath     = "/auth/whoami"
 	maxWhoAmIBody  = 1 << 20
+	maxSecretBody  = 7 << 20
 )
 
 var (
@@ -51,6 +52,11 @@ type Client struct {
 
 type whoAmIResponse struct {
 	Namespace string `json:"namespace"`
+}
+
+type Secret struct {
+	Value   string `json:"value"`
+	Version int64  `json:"version"`
 }
 
 func New(config Config) (*Client, error) {
@@ -159,6 +165,51 @@ func (c *Client) Namespace() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.namespace
+}
+
+func (c *Client) ReadSecret(ctx context.Context, path string, version int64) (Secret, error) {
+	namespace := c.Namespace()
+	if namespace == "" || strings.TrimSpace(path) == "" || version < 0 {
+		return Secret{}, ErrInvalidConfiguration
+	}
+	query := url.Values{"name": []string{path}}
+	if version > 0 {
+		query.Set("version", fmt.Sprint(version))
+	}
+	requestURL := c.baseURL + "/ns/" + url.PathEscape(namespace) + "/secrets/item?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return Secret{}, ErrRequestFailed
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Accept", "application/json")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return Secret{}, sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return Secret{}, ErrUnauthorized
+	}
+	if response.StatusCode == http.StatusForbidden {
+		return Secret{}, ErrForbidden
+	}
+	if response.StatusCode != http.StatusOK {
+		return Secret{}, fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxSecretBody+1))
+	if err != nil || len(body) > maxSecretBody {
+		return Secret{}, ErrInvalidResponse
+	}
+	var secret Secret
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&secret); err != nil || secret.Value == "" || secret.Version <= 0 {
+		return Secret{}, ErrInvalidResponse
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Secret{}, ErrInvalidResponse
+	}
+	return secret, nil
 }
 
 func normalizeAddress(raw string) (string, error) {

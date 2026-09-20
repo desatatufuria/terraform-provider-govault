@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -24,7 +25,10 @@ const (
 	supportedAuth   = "token"
 )
 
-var _ provider.Provider = (*goVaultProvider)(nil)
+var (
+	_ provider.Provider                       = (*goVaultProvider)(nil)
+	_ provider.ProviderWithEphemeralResources = (*goVaultProvider)(nil)
+)
 
 type goVaultProvider struct {
 	version   string
@@ -154,6 +158,10 @@ func (p *goVaultProvider) DataSources(context.Context) []func() datasource.DataS
 
 func (p *goVaultProvider) Resources(context.Context) []func() resource.Resource {
 	return nil
+}
+
+func (p *goVaultProvider) EphemeralResources(context.Context) []func() ephemeral.EphemeralResource {
+	return []func() ephemeral.EphemeralResource{newSecretEphemeralResource}
 }
 
 func validateKnownConfiguration(config providerModel) diag.Diagnostics {

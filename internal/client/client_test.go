@@ -212,6 +212,77 @@ func TestAuthenticateClassifiesServerFailures(t *testing.T) {
 	}
 }
 
+func TestReadSecretUsesDerivedNamespaceAndSlashSafeQuery(t *testing.T) {
+	t.Parallel()
+	const token = "gv.read-canary"
+	var versionQueries []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case whoAmIPath:
+			_, _ = w.Write([]byte(`{"namespace":"team-a"}`))
+		case "/ns/team-a/secrets/item":
+			versionQueries = append(versionQueries, r.URL.Query().Get("version"))
+			if r.URL.Query().Get("name") != "infrastructure/example" {
+				t.Errorf("query = %q", r.URL.RawQuery)
+			}
+			if strings.Contains(r.URL.EscapedPath(), "infrastructure") {
+				t.Errorf("secret path escaped into URL path: %s", r.URL.EscapedPath())
+			}
+			_, _ = w.Write([]byte(`{"value":"secret-canary","version":2}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, server.URL, token, time.Second)
+	if err := client.Authenticate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := client.ReadSecret(context.Background(), "infrastructure/example", 2)
+	if err != nil || secret.Value != "secret-canary" || secret.Version != 2 {
+		t.Fatalf("secret = %#v, error = %v", secret, err)
+	}
+	if _, err := client.ReadSecret(context.Background(), "infrastructure/example", 0); err != nil {
+		t.Fatalf("read latest: %v", err)
+	}
+	if strings.Join(versionQueries, ",") != "2," {
+		t.Fatalf("version queries = %q, want explicit then omitted", versionQueries)
+	}
+}
+
+func TestReadSecretRejectsUnsafeResponsesWithoutLeaks(t *testing.T) {
+	t.Parallel()
+	const canary = "response-secret-canary"
+	tests := map[string]struct {
+		status int
+		body   string
+		want   error
+	}{
+		"unauthorized":  {http.StatusUnauthorized, canary, ErrUnauthorized},
+		"status":        {http.StatusInternalServerError, canary, ErrUnexpectedStatus},
+		"missing value": {http.StatusOK, `{"version":1}`, ErrInvalidResponse},
+		"bad version":   {http.StatusOK, `{"value":"x","version":0}`, ErrInvalidResponse},
+		"trailing":      {http.StatusOK, `{"value":"x","version":1}` + canary, ErrInvalidResponse},
+		"oversized":     {http.StatusOK, `{"value":"` + strings.Repeat("x", maxSecretBody) + `","version":1}`, ErrInvalidResponse},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, server.URL, "gv.token", time.Second)
+			client.namespace = "team-a"
+			_, err := client.ReadSecret(context.Background(), "app/key", 0)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			assertRedacted(t, err, canary)
+		})
+	}
+}
+
 func TestNewRejectsUnsafeConfiguration(t *testing.T) {
 	t.Parallel()
 

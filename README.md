@@ -1,6 +1,6 @@
 # Terraform Provider for GoVault
 
-This repository contains the standalone Terraform provider for GoVault. It supports bounded token bootstrap and verified TLS configuration. Secret resources are not exposed yet.
+This repository contains the standalone Terraform provider for GoVault. It supports bounded token bootstrap, verified TLS configuration, and ephemeral secret reads.
 
 ## Requirements
 
@@ -34,6 +34,19 @@ provider "govault" {
 Provider configuration requires HTTPS, performs normal certificate and hostname verification, and may add the PEM certificates selected by `ca_cert_file` to the system trust roots. Requests use a 30-second timeout and honor Terraform cancellation. During configuration the provider calls `GET /auth/whoami` with bearer authentication and retains the namespace returned by GoVault for future ephemeral operations; the namespace is not user-selectable.
 
 Authentication diagnostics contain stable error classes and HTTP status codes only. GoVault response bodies and token values are not copied into diagnostics.
+
+## Ephemeral secrets
+
+```hcl
+ephemeral "govault_secret" "example" {
+  path    = "infrastructure/example"
+  version = 1 # optional; omit for latest
+}
+```
+
+`value` and `resolved_version` are computed, sensitive, ephemeral results. The resource has no namespace, role, or policy selector, and the provider exposes no secret-bearing data source or managed resource.
+
+Terraform acceptance uses explicitly supplied local binaries only: set `TF_ACC_TERRAFORM_1_10` and `TF_ACC_TERRAFORM_1_11`. Tests skip missing binaries and never download Terraform.
 
 ## Development
 
