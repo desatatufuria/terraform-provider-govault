@@ -9,8 +9,9 @@ terraform {
 }
 
 provider "govault" {
-  address      = "https://govault.example.com"
-  auth_method  = "token"
-  token_env    = "GOVAULT_TOKEN"
-  ca_cert_file = "/etc/govault/ca.pem"
+  address                = "https://govault.example.com"
+  auth_method            = "workload"
+  workload_role_ref      = "terraform-production"
+  workload_assertion_env = "GOVAULT_WORKLOAD_ASSERTION"
+  ca_cert_file           = "/etc/govault/ca.pem"
 }

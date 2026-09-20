@@ -61,7 +61,7 @@ func (p *goVaultProvider) Metadata(_ context.Context, _ provider.MetadataRequest
 
 func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Configure the GoVault provider with token bootstrap, verified TLS, and server-derived namespace authority.",
+		Description: "Configure the GoVault provider with explicit token or workload authentication, verified TLS, and server-derived namespace authority.",
 		Attributes: map[string]schema.Attribute{
 			"address": schema.StringAttribute{
 				Description: "Base HTTPS address of the GoVault API.",
@@ -78,15 +78,15 @@ func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				},
 			},
 			"token_env": schema.StringAttribute{
-				Description: "Name of the environment variable that will supply the GoVault token. This is a selector, not the token value.",
+				Description: "Token mode only: name of the environment variable that supplies the GoVault token. This is a selector, not the token value.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},
 			},
-			"workload_role_ref":       schema.StringAttribute{Optional: true, Description: "GoVault workload authentication role reference."},
-			"workload_assertion_env":  schema.StringAttribute{Optional: true, Description: "Name of the environment variable supplying the workload assertion."},
-			"workload_assertion_file": schema.StringAttribute{Optional: true, Description: "Path to a protected file supplying the workload assertion."},
+			"workload_role_ref":       schema.StringAttribute{Optional: true, Description: "Workload mode only: server-defined GoVault workload role reference."},
+			"workload_assertion_env":  schema.StringAttribute{Optional: true, Description: "Workload mode only: name of the environment variable supplying the assertion."},
+			"workload_assertion_file": schema.StringAttribute{Optional: true, Description: "Workload mode only: path to a protected regular assertion file on Unix-like systems. File assertions are unsupported on Windows."},
 			"ca_cert_file": schema.StringAttribute{
 				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault.",
 				Optional:    true,
