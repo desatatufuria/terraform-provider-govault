@@ -46,7 +46,7 @@ audience, algorithm, or TTL authority to Terraform configuration.
 
 ## Out of scope
 
-- GoVault source or API changes.
+- GoVault runtime/API changes; test-only parity needs separate authorization.
 - GitHub-, GitLab-, Kubernetes-, CI-, cloud-, or vendor-specific helpers.
 - AppRole, Kubernetes auth, automatic method discovery, or method fallback.
 - Inline assertions or inline static GoVault tokens in provider configuration.
@@ -86,8 +86,9 @@ audience, algorithm, or TTL authority to Terraform configuration.
 
 - Environment mode reads only the explicitly named variable and has no
   fallback variable.
-- Unix file mode accepts only a regular file, rejects symlinks, limits content
-  to 262,144 bytes, and rejects group or other permission bits.
+- Unix file mode opens without following symlinks; the same descriptor supplies
+  `Fstat` type, group/other mode and size checks plus the bounded 262,144-byte
+  read. Path-level `Lstat` followed by `ReadFile` is forbidden.
 - Windows supports environment assertions only; file mode fails closed with a
   stable diagnostic.
 - Assertions are read on demand, bounded, validated as non-empty UTF-8 input,
@@ -98,20 +99,23 @@ audience, algorithm, or TTL authority to Terraform configuration.
 - Workload login does not perform a follow-up `/auth/whoami` call.
 - The provider stores only the GoVault bearer, namespace, expiry, and internal
   coordination metadata in memory.
-- Reauthentication occurs only when known expiry has been reached or after one
-  authenticated secret read returns `401`.
-- Concurrent reauthentication is coordinated so one exchange establishes the
-  next session generation.
-- At most one exchange and one replay are allowed for the affected operation.
-- Login itself is not retried automatically after `401`.
+- Reauthentication occurs only when an injectable clock observes
+  `expires_at <= now` before the request. An unexpected `401` is terminal and
+  never triggers exchange/replay because expiry and revocation are indistinct.
+- Each read captures the atomic session/generation, reuses a newer generation,
+  or elects one exchange leader whose result is shared by waiters.
+- Waiters cancel independently; exchange stops only when all leave, and every outcome clears in-flight state.
+- Results commit atomically only while their generation is current; stale results are discarded.
+- One operation makes at most one login attempt. There is no internal sleep or
+  retry for `400`, `401`, `429`, `503`, TLS, transport, timeout, cancellation,
+  or malformed responses.
 - There is never fallback to token auth or to another assertion source.
-- Cancellation and configured HTTP timeouts apply to exchange and replay.
+- Cancellation and configured HTTP timeouts apply to exchange and requests.
 
 ### Contract fixture
 
-- A versioned workload-login fixture lives in this provider repository.
-- It validates the frozen request, response, status, and additive-response
-  compatibility without creating a runtime dependency on the GoVault repo.
+- The provider fixture records schema version, GoVault provenance and hash.
+- Provider and GoVault validate the exact version/hash before completion/publication, without runtime coupling.
 
 ## Architecture boundary
 
@@ -140,33 +144,7 @@ Terraform provider configuration
 
 ## Work units
 
-### PFF-001 — Explicit modes and bounded assertion sources `[ ]`
-
-Route: `delegated direct`.
-
-Trigger evidence: preparation and mapping span provider schema, configuration,
-client construction, tests, documentation, and platform-specific file behavior;
-implementation will touch multiple non-trivial files.
-
-Scope:
-
-- Extend schema and configuration validation for the frozen attributes.
-- Preserve direct-token behavior exactly.
-- Implement explicit environment and protected-file assertion sources.
-- Add Unix and Windows behavior behind small platform-specific boundaries.
-- Document the selectors and negative combinations.
-
-Acceptance:
-
-- Every token/workload selector combination is covered.
-- Null, unknown, empty, dual-source, wrong-method, symlink, non-regular,
-  oversized, and unsafe-permission inputs fail closed before network I/O.
-- Missing selected environment variables never fall back.
-- Diagnostics do not contain assertion content.
-
-Forecast: 280–420 authored lines.
-
-### PFF-002 — Workload exchange protocol `[ ]`
+### PFF-001 — Internal workload exchange boundary `[ ]`
 
 Route: `delegated direct`.
 
@@ -175,22 +153,47 @@ documentation are multiple non-trivial files.
 
 Scope:
 
-- Add the bounded `POST /auth/workload/login` client operation.
-- Preserve TLS, custom CA, hostname verification, timeout, cancellation, and
-  redirect rejection from Phase E.
-- Validate the frozen success response and stable failure classes.
-- Add a versioned provider-local contract fixture.
+- Refactor transport construction so protocol calls do not require a static
+  token, while preserving current token authentication behavior.
+- Add the bounded `POST /auth/workload/login` operation without exposing
+  `auth_method = workload` in provider schema yet.
+- Add the versioned fixture/provenance/hash and GoVault parity-gate input.
 
 Acceptance:
 
-- Exact allowlisted request body; no namespace, policy, TTL, provider, issuer,
-  audience, or algorithm fields.
-- Response body is bounded and exactly one JSON value; additive fields remain
-  compatible.
-- Tokens are non-empty and equal, namespace is non-empty, and expiry is valid.
-- `400`, `401`, `429`, `503`, malformed, oversized, trailing, timeout,
-  cancellation, redirect, CA, and hostname cases are covered.
-- Bodies, assertions, bearer tokens, URLs, and secrets are absent from errors.
+- Exact request body; bounded one-document additive-compatible response.
+- Non-empty equal token aliases, namespace, and future expiry are required.
+- Machine codes agree with `400/401/429/503`; parse ≤20 ASCII `Retry-After` bytes overflow-safe without retry.
+- Exact request-count tests prove one login attempt for every failure class.
+- Workload remains unreachable through public schema at this boundary.
+
+Forecast: 280–420 authored lines.
+
+### PFF-002 — Usable initial workload authentication `[ ]`
+
+Route: `delegated direct`.
+
+Trigger evidence: provider schema, configuration, platform-specific assertion
+sources, initial session construction, tests, and docs are multiple non-trivial
+files.
+
+Scope:
+
+- Expose the frozen workload selectors and method validation.
+- Implement env, descriptor-safe Unix file, and Windows env-only sources.
+- Wire one initial workload exchange into `Configure`, publishing one atomic
+  memory-only session to the existing ephemeral resource.
+- Preserve `token_env = null` selecting the existing `GOVAULT_TOKEN` default.
+
+Acceptance:
+
+- Full per-method matrix: token null keeps its default; workload with both
+  sources null fails; explicit empty, dual-source, crossed-method, and unknown
+  values fail before network I/O.
+- File tests cover no-follow, same-descriptor checks/read and path replacement.
+- A valid workload configuration completes login and can read a secret; no
+  public configuration is accepted without a functional path.
+- No fallback or assertion/session material appears in diagnostics or state.
 
 Forecast: 280–420 authored lines.
 
@@ -206,18 +209,21 @@ Scope:
 
 - Introduce the smallest provider-local session coordinator.
 - Wire token mode and workload mode through explicit construction paths.
-- Re-read the selected assertion only at initial login or allowed reauth.
-- Coordinate one session generation and one replay across concurrent readers.
+- Re-read the selected assertion only at initial login or known-expiry reauth.
+- Coordinate session generations under the frozen leader/waiter, cancellation,
+  failed-flight cleanup, and stale-result rules.
 - Reuse the existing ephemeral secret resource contract.
 
 Acceptance:
 
 - Session material never enters schema, plan, state, resource results, or
   diagnostics.
-- Known expiry and one secret-read `401` trigger one coordinated exchange.
-- `403`, `429`, `5xx`, malformed responses, TLS failures, and cancellation do
-  not trigger method/source fallback or uncontrolled replay.
-- Concurrent tests prove bounded exchanges and correct session generations.
+- `expires_at <= now` triggers one coordinated exchange using an injectable
+  clock; an unexpected `401` is terminal and makes no login request or replay.
+- `400`, `401`, `403`, `429`, `5xx`, malformed responses, TLS failures,
+  timeout, and cancellation do not trigger fallback, sleep, or retry.
+- Concurrent tests prove cancellation, cleanup, later retry, generation reuse,
+  stale-result rejection, atomic commit and exact request counts.
 - Direct-token mode remains behaviorally unchanged.
 
 Forecast: 280–420 authored lines.
@@ -233,8 +239,8 @@ multiple non-trivial files.
 Scope:
 
 - Extend the verified Terraform 1.10.5 and 1.11.4 acceptance matrix.
-- Exercise successful workload login, ephemeral secret read, expiry/401 reauth,
-  and negative no-fallback behavior.
+- Exercise successful workload login, ephemeral secret read, known-expiry
+  reauth, terminal unexpected `401`, and negative no-fallback behavior.
 - Add separate assertion, forbidden-static-token, session-token, and secret
   canaries.
 - Update provider documentation and examples without real credentials.
@@ -247,6 +253,8 @@ Acceptance:
 - No canary or raw HTTP body is present on any scanned surface.
 - The fake server verifies exact bearer generations and request counts.
 - No runtime dependency on the GoVault checkout exists.
+- Provider and separately authorized GoVault parity tests pass for the exact
+  fixture version and hash before Phase F is declared complete.
 
 Forecast: 320–480 authored lines.
 
@@ -286,9 +294,9 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 | Task | Commit | Authored lines | Checks | Runtime | RDD | Rollback |
 | --- | --- | ---: | --- | --- | --- | --- |
 | Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
-| PFF-001 | pending | pending | pending | N/A unless a runtime boundary is introduced | pending | revert PFF-001 work-unit commit(s) |
-| PFF-002 | pending | pending | pending | focused fake-server protocol tests | pending | revert PFF-002 work-unit commit(s) |
-| PFF-003 | pending | pending | pending | focused concurrent session/replay tests | pending | revert PFF-003 work-unit commit(s) |
+| PFF-001 | pending | pending | pending | focused fake-server protocol tests; schema remains hidden | pending | revert PFF-001 work-unit commit(s) |
+| PFF-002 | pending | pending | pending | usable initial workload login and secret read | pending | revert PFF-002 work-unit commit(s) |
+| PFF-003 | pending | pending | pending | focused concurrent session/expiry tests | pending | revert PFF-003 work-unit commit(s) |
 | PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
 
 ## Delivery and rollback
@@ -308,8 +316,8 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
   GoVault Phase C.
 - [x] Public schema, source policy, session policy, contract ownership, branch,
   delivery strategy, and work-unit boundaries frozen.
-- [ ] PFF-001 — Explicit modes and bounded assertion sources.
-- [ ] PFF-002 — Workload exchange protocol.
+- [ ] PFF-001 — Internal workload exchange boundary.
+- [ ] PFF-002 — Usable initial workload authentication.
 - [ ] PFF-003 — Memory-only session and bounded reauthentication.
 - [ ] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
 
