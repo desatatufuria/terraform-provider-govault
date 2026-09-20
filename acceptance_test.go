@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +29,7 @@ const (
 	acceptanceForbiddenToken  = "gv-acceptance-forbidden-static-token-canary"
 	acceptanceSessionOne      = "gv-acceptance-workload-session-one-canary"
 	acceptanceSessionTwo      = "gv-acceptance-workload-session-two-canary"
+	acceptanceIntermediate    = "gv-acceptance-workload-intermediate-canary"
 	acceptanceTerminalSession = "gv-acceptance-workload-terminal-session-canary"
 	acceptanceRawBodyCanary   = "gv-acceptance-raw-http-body-canary"
 	acceptanceCaptureLimit    = 64 * 1024
@@ -91,7 +93,14 @@ ephemeral "govault_secret" "first" {
 ephemeral "govault_secret" "second" {
   path = ephemeral.govault_secret.first.value
 }`)
-	runAcceptanceCommand(t, successDir, successEnv, binary, "plan", "-out=tfplan", "-input=false")
+	planOutput := runAcceptanceCommand(t, successDir, successEnv, binary, "plan", "-out=tfplan", "-input=false")
+	showOutput := runAcceptanceCommand(t, successDir, successEnv, binary, "show", "-json", "tfplan")
+	applyOutput := runAcceptanceCommand(t, successDir, successEnv, binary, "apply", "-input=false", "-auto-approve", "tfplan")
+	stateOutput := runAcceptanceCommand(t, successDir, successEnv, binary, "state", "pull")
+	surfaces := []string{
+		planOutput.stdout, planOutput.stderr, showOutput.stdout, showOutput.stderr,
+		applyOutput.stdout, applyOutput.stderr, stateOutput.stdout, stateOutput.stderr,
+	}
 
 	terminalDir, terminalEnv := writeWorkloadAcceptanceFixture(t, root, "terminal", binary, version, providerDir, server.URL, ca, "terminal", `
 ephemeral "govault_secret" "terminal" {
@@ -108,13 +117,14 @@ ephemeral "govault_secret" "denied" {
 	state.mu.Lock()
 	counts := []int{state.successLogins, state.successSecrets, state.terminalLogins, state.terminalSecrets, state.deniedLogins, state.deniedSecrets}
 	state.mu.Unlock()
-	if fmt.Sprint(counts) != "[2 2 1 1 1 0]" {
-		t.Fatalf("workload request counts = %v, want [2 2 1 1 1 0]", counts)
+	if fmt.Sprint(counts) != "[3 4 1 1 1 0]" {
+		t.Fatalf("workload request counts = %v, want [3 4 1 1 1 0]", counts)
 	}
-	surfaces, err := collectAcceptanceSurfaces(root, "README.md", "docs", "examples")
+	artifactSurfaces, err := collectAcceptanceSurfaces(root, "README.md", "docs", "examples")
 	if err != nil {
 		t.Fatal("collect workload acceptance scan surfaces")
 	}
+	surfaces = append(surfaces, artifactSurfaces...)
 	assertNoAcceptanceCanaries(t, version, surfaces)
 	for _, name := range []string{"success", "terminal", "denied"} {
 		logAcceptanceHash(t, version+" workload "+name+" TF_LOG", filepath.Join(root, name, "terraform.log"))
@@ -124,11 +134,16 @@ ephemeral "govault_secret" "denied" {
 func (s *workloadAcceptanceState) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
 	if r.URL.Path == "/auth/workload/login" {
+		body, err := io.ReadAll(r.Body)
 		var request struct {
 			RoleRef   string `json:"role_ref"`
 			Assertion string `json:"assertion"`
 		}
-		if r.Header.Get("Authorization") != "" || json.NewDecoder(r.Body).Decode(&request) != nil || request.Assertion != acceptanceAssertionCanary {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if err != nil || r.Method != http.MethodPost || r.URL.RawQuery != "" || r.Header.Get("Content-Type") != "application/json" ||
+			requestContainsForbiddenToken(r, body) || decoder.Decode(&request) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			request.Assertion != acceptanceAssertionCanary {
 			t.Error("workload login did not contain only the expected public credentials")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -168,17 +183,23 @@ func (s *workloadAcceptanceState) handle(t *testing.T, w http.ResponseWriter, r 
 	switch r.URL.Query().Get("name") {
 	case "first":
 		s.successSecrets++
-		if r.Header.Get("Authorization") != "Bearer "+acceptanceSessionOne {
+		expected := acceptanceSessionTwo
+		if s.successSecrets == 1 {
+			expected = acceptanceSessionOne
+		}
+		if r.Header.Get("Authorization") != "Bearer "+expected {
 			t.Error("first secret request used the wrong session generation")
 		}
-		wait := time.Until(s.firstExpiry.Add(250 * time.Millisecond))
-		s.mu.Unlock()
-		if wait > 0 {
-			time.Sleep(wait)
+		if s.successSecrets == 1 {
+			wait := time.Until(s.firstExpiry.Add(250 * time.Millisecond))
+			s.mu.Unlock()
+			if wait > 0 {
+				time.Sleep(wait)
+			}
+			s.mu.Lock()
 		}
-		s.mu.Lock()
-		_, _ = w.Write([]byte(`{"value":"second","version":1}`))
-	case "second":
+		fmt.Fprintf(w, `{"value":%q,"version":1}`, acceptanceIntermediate)
+	case acceptanceIntermediate:
 		s.successSecrets++
 		if r.Header.Get("Authorization") != "Bearer "+acceptanceSessionTwo {
 			t.Error("dependent secret request did not use the renewed session")
@@ -229,6 +250,26 @@ provider "govault" {
 		t.Fatalf("binary is not pinned to Terraform %s", version)
 	}
 	return dir, env
+}
+
+func requestContainsForbiddenToken(r *http.Request, body []byte) bool {
+	if strings.Contains(r.URL.String(), acceptanceForbiddenToken) ||
+		strings.Contains(r.RequestURI, acceptanceForbiddenToken) ||
+		strings.Contains(r.Host, acceptanceForbiddenToken) ||
+		bytes.Contains(body, []byte(acceptanceForbiddenToken)) {
+		return true
+	}
+	for name, values := range r.Header {
+		if strings.Contains(name, acceptanceForbiddenToken) {
+			return true
+		}
+		for _, value := range values {
+			if strings.Contains(value, acceptanceForbiddenToken) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func runExpectedWorkloadFailure(t *testing.T, dir string, env []string, binary, signal string) {
@@ -500,7 +541,7 @@ func acceptanceProtectedCanaries() []string {
 	return []string{
 		acceptanceTokenCanary, acceptanceSecretCanary, acceptanceAssertionCanary,
 		acceptanceForbiddenToken, acceptanceSessionOne, acceptanceSessionTwo,
-		acceptanceTerminalSession, acceptanceRawBodyCanary,
+		acceptanceIntermediate, acceptanceTerminalSession, acceptanceRawBodyCanary,
 	}
 }
 
