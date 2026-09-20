@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -20,6 +24,12 @@ import (
 const (
 	acceptanceTokenCanary     = "gv-acceptance-token-canary"
 	acceptanceSecretCanary    = "gv-acceptance-secret-canary"
+	acceptanceAssertionCanary = "gv-acceptance-workload-assertion-canary"
+	acceptanceForbiddenToken  = "gv-acceptance-forbidden-static-token-canary"
+	acceptanceSessionOne      = "gv-acceptance-workload-session-one-canary"
+	acceptanceSessionTwo      = "gv-acceptance-workload-session-two-canary"
+	acceptanceTerminalSession = "gv-acceptance-workload-terminal-session-canary"
+	acceptanceRawBodyCanary   = "gv-acceptance-raw-http-body-canary"
 	acceptanceCaptureLimit    = 64 * 1024
 	acceptanceCaptureOmitted  = "\n...[output omitted]...\n"
 	acceptanceUnknownCommand  = "external command"
@@ -48,7 +58,189 @@ func TestTerraformEphemeralAcceptance(t *testing.T) {
 				t.Skip("pinned Terraform " + version + " binary unavailable")
 			}
 			runTerraformCanary(t, binary, version, providerDir)
+			runTerraformWorkloadCanaries(t, binary, version, providerDir)
 		})
+	}
+}
+
+type workloadAcceptanceState struct {
+	mu                              sync.Mutex
+	successLogins, successSecrets   int
+	terminalLogins, terminalSecrets int
+	deniedLogins, deniedSecrets     int
+	firstExpiry                     time.Time
+}
+
+func runTerraformWorkloadCanaries(t *testing.T, binary, version, providerDir string) {
+	t.Helper()
+	state := &workloadAcceptanceState{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state.handle(t, w, r)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ca := filepath.Join(root, "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal("write workload acceptance CA")
+	}
+	successDir, successEnv := writeWorkloadAcceptanceFixture(t, root, "success", binary, version, providerDir, server.URL, ca, "success", `
+ephemeral "govault_secret" "first" {
+  path = "first"
+}
+ephemeral "govault_secret" "second" {
+  path = ephemeral.govault_secret.first.value
+}`)
+	runAcceptanceCommand(t, successDir, successEnv, binary, "plan", "-out=tfplan", "-input=false")
+
+	terminalDir, terminalEnv := writeWorkloadAcceptanceFixture(t, root, "terminal", binary, version, providerDir, server.URL, ca, "terminal", `
+ephemeral "govault_secret" "terminal" {
+  path = "terminal-401"
+}`)
+	runExpectedWorkloadFailure(t, terminalDir, terminalEnv, binary, "Unable to read GoVault secret")
+
+	deniedDir, deniedEnv := writeWorkloadAcceptanceFixture(t, root, "denied", binary, version, providerDir, server.URL, ca, "denied", `
+ephemeral "govault_secret" "denied" {
+  path = "must-not-run"
+}`)
+	runExpectedWorkloadFailure(t, deniedDir, deniedEnv, binary, "GoVault workload authentication failed")
+
+	state.mu.Lock()
+	counts := []int{state.successLogins, state.successSecrets, state.terminalLogins, state.terminalSecrets, state.deniedLogins, state.deniedSecrets}
+	state.mu.Unlock()
+	if fmt.Sprint(counts) != "[2 2 1 1 1 0]" {
+		t.Fatalf("workload request counts = %v, want [2 2 1 1 1 0]", counts)
+	}
+	surfaces, err := collectAcceptanceSurfaces(root, "README.md", "docs", "examples")
+	if err != nil {
+		t.Fatal("collect workload acceptance scan surfaces")
+	}
+	assertNoAcceptanceCanaries(t, version, surfaces)
+	for _, name := range []string{"success", "terminal", "denied"} {
+		logAcceptanceHash(t, version+" workload "+name+" TF_LOG", filepath.Join(root, name, "terraform.log"))
+	}
+}
+
+func (s *workloadAcceptanceState) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if r.URL.Path == "/auth/workload/login" {
+		var request struct {
+			RoleRef   string `json:"role_ref"`
+			Assertion string `json:"assertion"`
+		}
+		if r.Header.Get("Authorization") != "" || json.NewDecoder(r.Body).Decode(&request) != nil || request.Assertion != acceptanceAssertionCanary {
+			t.Error("workload login did not contain only the expected public credentials")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		switch request.RoleRef {
+		case "success":
+			s.successLogins++
+			token, expires := acceptanceSessionTwo, time.Now().Add(10*time.Minute)
+			if s.successLogins == 1 {
+				token, s.firstExpiry = acceptanceSessionOne, time.Now().Add(4*time.Second)
+				expires = s.firstExpiry
+			}
+			fmt.Fprintf(w, `{"token":%q,"access_token":%q,"namespace":"team-a","expires_at":%d}`, token, token, expires.Unix())
+		case "terminal":
+			s.terminalLogins++
+			fmt.Fprintf(w, `{"token":%q,"access_token":%q,"namespace":"team-a","expires_at":%d}`, acceptanceTerminalSession, acceptanceTerminalSession, time.Now().Add(10*time.Minute).Unix())
+		case "denied":
+			s.deniedLogins++
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, `{"code":"unauthenticated","detail":%q}`, acceptanceRawBodyCanary)
+		default:
+			t.Error("unexpected workload role reference")
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.URL.Path != "/ns/team-a/secrets/item" {
+		t.Error("unexpected workload secret path")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.URL.Query().Get("name") {
+	case "first":
+		s.successSecrets++
+		if r.Header.Get("Authorization") != "Bearer "+acceptanceSessionOne {
+			t.Error("first secret request used the wrong session generation")
+		}
+		wait := time.Until(s.firstExpiry.Add(250 * time.Millisecond))
+		s.mu.Unlock()
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		s.mu.Lock()
+		_, _ = w.Write([]byte(`{"value":"second","version":1}`))
+	case "second":
+		s.successSecrets++
+		if r.Header.Get("Authorization") != "Bearer "+acceptanceSessionTwo {
+			t.Error("dependent secret request did not use the renewed session")
+		}
+		fmt.Fprintf(w, `{"value":%q,"version":1}`, acceptanceSecretCanary)
+	case "terminal-401":
+		s.terminalSecrets++
+		if r.Header.Get("Authorization") != "Bearer "+acceptanceTerminalSession {
+			t.Error("terminal secret request used the wrong session")
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"detail":%q}`, acceptanceRawBodyCanary)
+	default:
+		s.deniedSecrets++
+		t.Error("unexpected workload secret request")
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func writeWorkloadAcceptanceFixture(t *testing.T, root, name, binary, version, providerDir, address, ca, role, resources string) (string, []string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := `terraform {
+  required_version = "~> ` + version + `.0"
+  required_providers { govault = { source = "desatatufuria/govault" } }
+}
+provider "govault" {
+  address                = "` + address + `"
+  auth_method            = "workload"
+  workload_role_ref      = "` + role + `"
+  workload_assertion_env = "GOVAULT_ACCEPTANCE_ASSERTION"
+  ca_cert_file           = "` + ca + `"
+}
+` + resources + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "terraform.rc")
+	if err := os.WriteFile(cli, []byte(`provider_installation { dev_overrides { "registry.terraform.io/desatatufuria/govault" = "`+providerDir+`" } }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := replaceEnv(os.Environ(), "GOVAULT_ACCEPTANCE_ASSERTION="+acceptanceAssertionCanary, "GOVAULT_TOKEN="+acceptanceForbiddenToken, "TF_CLI_CONFIG_FILE="+cli, "TF_DATA_DIR="+filepath.Join(dir, ".terraform"), "TF_LOG=TRACE", "TF_LOG_PATH="+filepath.Join(dir, "terraform.log"))
+	versionOutput := runAcceptanceCommand(t, dir, env, binary, "version", "-json")
+	if !strings.Contains(versionOutput.stdout, `"terraform_version":"`+version+`.`) && !strings.Contains(versionOutput.stdout, `"terraform_version": "`+version+`.`) {
+		t.Fatalf("binary is not pinned to Terraform %s", version)
+	}
+	return dir, env
+}
+
+func runExpectedWorkloadFailure(t *testing.T, dir string, env []string, binary, signal string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	output, err, _ := executeAcceptanceCommand(ctx, dir, env, binary, "plan", "-input=false")
+	if output.protectedCanary {
+		t.Fatal("Terraform failure emitted a protected workload canary")
+	}
+	if err == nil || !strings.Contains(output.stdout+output.stderr, signal) {
+		t.Fatalf("expected sanitized workload failure class %q", signal)
 	}
 }
 
@@ -141,13 +333,17 @@ ephemeral "govault_secret" "canary" {
 		t.Fatal("collect acceptance scan surfaces")
 	}
 	surfaces = append(surfaces, artifactSurfaces...)
-	for _, surface := range surfaces {
-		for _, canary := range []string{token, secret} {
-			if strings.Contains(surface, canary) {
-				t.Fatalf("Terraform %s artifact leaked canary", version)
-			}
-		}
+	assertNoAcceptanceCanaries(t, version, surfaces)
+	logAcceptanceHash(t, version+" token TF_LOG", logPath)
+}
+
+func logAcceptanceHash(t *testing.T, label, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", label, err)
 	}
+	t.Logf("%s sha256=%x bytes=%d", label, sha256.Sum256(data), len(data))
 }
 
 type acceptanceOutput struct {
@@ -280,21 +476,41 @@ func (c *acceptanceCapture) Write(p []byte) (int, error) {
 }
 
 func (c *acceptanceCapture) scanProtectedCanaries(p []byte) {
-	canaries := [][]byte{[]byte(acceptanceTokenCanary), []byte(acceptanceSecretCanary)}
-	for _, canary := range canaries {
+	keep := 0
+	for _, value := range acceptanceProtectedCanaries() {
+		canary := []byte(value)
 		boundarySize := min(len(p), len(canary)-1)
 		boundary := append(append([]byte(nil), c.scanTail...), p[:boundarySize]...)
 		if bytes.Contains(p, canary) || bytes.Contains(boundary, canary) {
 			c.protectedCanary = true
 		}
+		keep = max(keep, len(canary)-1)
 	}
-	keep := max(len(acceptanceTokenCanary), len(acceptanceSecretCanary)) - 1
 	if len(p) >= keep {
 		c.scanTail = append(c.scanTail[:0], p[len(p)-keep:]...)
 	} else {
 		c.scanTail = append(c.scanTail, p...)
 		if len(c.scanTail) > keep {
 			c.scanTail = append(c.scanTail[:0], c.scanTail[len(c.scanTail)-keep:]...)
+		}
+	}
+}
+
+func acceptanceProtectedCanaries() []string {
+	return []string{
+		acceptanceTokenCanary, acceptanceSecretCanary, acceptanceAssertionCanary,
+		acceptanceForbiddenToken, acceptanceSessionOne, acceptanceSessionTwo,
+		acceptanceTerminalSession, acceptanceRawBodyCanary,
+	}
+}
+
+func assertNoAcceptanceCanaries(t *testing.T, version string, surfaces []string) {
+	t.Helper()
+	for _, surface := range surfaces {
+		for _, canary := range acceptanceProtectedCanaries() {
+			if strings.Contains(surface, canary) {
+				t.Fatalf("Terraform %s artifact leaked a protected canary", version)
+			}
 		}
 	}
 }
@@ -439,7 +655,7 @@ func TestAcceptanceCaptureIsBoundedSanitizedAndScansEntireStream(t *testing.T) {
 }
 
 func TestAcceptanceCaptureDetectsEveryCanaryAcrossWrites(t *testing.T) {
-	for _, canary := range []string{acceptanceTokenCanary, acceptanceSecretCanary} {
+	for _, canary := range acceptanceProtectedCanaries() {
 		t.Run(canary, func(t *testing.T) {
 			capture := newAcceptanceCapture()
 			middle := len(canary) / 2
