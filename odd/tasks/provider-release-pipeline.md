@@ -47,7 +47,10 @@ Registry.
 - TDD source: inherited GoVault program configuration recorded by the existing
   provider ledgers (`strict_tdd: false`, `rules.apply.tdd: false`).
 - Test runner: ordinary Go and release-tool checks listed per task.
-- Delivery strategy: `ask-on-risk`.
+- Delivery strategy: `single-pr` review-size exception, explicitly approved by
+  the user after PRP-002 reached 388 authored lines. CI, release packaging, and
+  their operator documentation remain one cohesive review unit; splitting the
+  documentation from the workflows it describes would reduce review clarity.
 - Forecast: about 360 authored changed lines, excluding generated release
   artifacts.
 - Initial reviewed boundary: `aeb308e1881d742de2a0958517c84571d7b0ece5`.
@@ -55,7 +58,10 @@ Registry.
 - RDD exception: user declined review only for CI candidate
   `eac3a9d312bbd7f1471d3594a0a2685f6e67c3b1` / target
   `sha256:273e7ac53637a444eb5d8766a84aafa2d64a45daf1f9c0d7dd1d1e2b07e86fb1`;
-  ordinary policy applies to that candidate only.
+  ordinary policy applies to that candidate only. The user separately declined
+  RDD for signed-release candidate
+  `c8136ac1678a53a11b459041ab8a40d2ad8ab329` / target
+  `sha256:c16bbdb289621626557bf5828dbd6260efb61cc17557157623c0affacea452b8`.
 
 ## Tasks
 
@@ -117,7 +123,7 @@ Registry.
     - Rollback: remove `.goreleaser.yml` and `.github/workflows/release.yml`,
       and revert the `dist/` ignore entry; provider behavior is unchanged.
 
-- [-] **PRP-003 — Operator documentation and final verification**
+- [x] **PRP-003 — Operator documentation and final verification**
   - Document immutable tag/release procedure, required GitHub secrets, expected
     artifacts, prerelease pinning, and the explicit boundary before Terraform
     Registry registration.
@@ -129,7 +135,38 @@ Registry.
       skipped checks recorded honestly.
   - Route: delegated writer for documentation; parent performs final
     orchestration and evidence reconciliation.
-  - Evidence: pending.
+  - Evidence:
+    - `README.md` documents the dedicated RSA release-signing identity, the
+      private/public-key trust boundary, exact workflow secrets, immutable tag
+      procedure, expected Registry-compatible assets, GPG/checksum validation,
+      and exact prerelease pinning (`= 0.1.0-rc.1`).
+    - The documentation keeps Terraform Registry registration outside this
+      pipeline as a later explicitly authorized operation and forbids moving
+      published tags or replacing their assets.
+    - `actionlint` v1.7.12 passed; all 10 workflow action references are pinned
+      to 40-character commit SHAs; all 21 tracked Go files pass `gofmt`.
+    - `go generate ./...` left generated provider documentation unchanged.
+      `go vet ./...`, `go test ./...`, `go test -race ./...`, and
+      `go build ./...` passed.
+    - `TestTerraformEphemeralAcceptance` passed independently with Terraform
+      1.10.5 and 1.11.4 (7.219s and 7.279s), with exactly one matching
+      acceptance environment variable configured per run.
+    - GoReleaser v2.18.2 required Go 1.27.1, so `GOTOOLCHAIN=auto` supplied the
+      required toolchain; configuration validation and a clean unsigned
+      snapshot passed. The snapshot produced 11 platform ZIPs containing one
+      versioned executable each. The release manifest declares protocol 6.0,
+      and every generated checksum passed after materializing the configured
+      release extra file under its release name.
+    - Repository and current-diff scans found no private-key blocks or common
+      live-secret token patterns. `git diff --check` passed.
+    - Intentionally skipped: checksum signing (no private key used), GitHub
+      Actions execution, push, tag, GitHub release, and Terraform Registry
+      registration. All require later remote authorization or secret setup.
+    - Runtime harness: the two real Terraform CLI acceptance runs and the local
+      cross-platform GoReleaser snapshot exercised the applicable boundaries.
+    - Rollback boundary: remove the `Publishing a release` section from
+      `README.md`; CI, packaging, and provider runtime behavior are unchanged.
+    - Work-unit commit intent: `docs(release): document provider publication`.
 
 ## Progress
 
@@ -143,7 +180,15 @@ Registry.
 - Running authored change count before the PRP-001 commit: 237 additions and
   no deletions (generated artifacts excluded).
 - PRP-002 packaging and local snapshot validation completed without publishing.
+- PRP-003 operator procedure and full local verification completed without any
+  remote mutation or use of release signing material.
+- Final feature diff: 510 authored lines (510 additions, no deletions), excluding
+  ignored snapshot artifacts. The user-approved `single-pr` exception applies
+  to the complete feature.
 
 ## Next step
 
-Document and run final verification for PRP-003 without publishing.
+After explicit authorization, push `tfp-provider-release-pipeline` and verify
+its GitHub Actions CI. Only then configure the signing secrets and separately
+authorize creation of `v0.1.0-rc.1`. Terraform Registry registration and the
+real GoVault workload-auth smoke test remain later explicit steps.
