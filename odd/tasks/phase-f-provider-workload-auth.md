@@ -2,8 +2,8 @@
 
 ## Status
 
-- Phase: authorized for local implementation planning
-- Current task: `PFF-004` pending explicit authorization
+- Phase: provider-side implementation complete; GoVault parity pending
+- Current task: `PFF-004` provider-side work complete; GoVault parity pending
 - Branch: `tfp-f-provider-workload-auth`
 - Base: `main` at `139bc0f8ced45c169975ae3f5c581583874ba444`
 - Delivery strategy: `feature-branch-chain`
@@ -228,7 +228,7 @@ Acceptance:
 
 Forecast: 280–420 authored lines.
 
-### PFF-004 — Runtime acceptance, leak canaries, and user documentation `[ ]`
+### PFF-004 — Runtime acceptance, leak canaries, and user documentation `[x]`
 
 Route: `delegated direct`.
 
@@ -293,11 +293,11 @@ diagnostics, process output, temporary artifacts, documentation, and examples.
 
 | Task | Commit | Authored lines | Checks | Runtime | RDD | Rollback |
 | --- | --- | ---: | --- | --- | --- | --- |
-| Planning | pending | pending | `git diff --check` pending | N/A: documentation-only work unit | assessment pending | revert planning commit |
+| Planning | `2e8399e`, `1248044` | 440 | historical planning unit; current document passes `git diff --check` | N/A: documentation-only work unit | historical authority not recorded in this ledger | `git revert 1248044`; then `git revert 2e8399e` |
 | PFF-001 | `97c9166` | 373 | focused/full/race/vet/build/mod/gofmt/diff PASS | fake TLS server proves exact one-attempt exchange; schema hidden | approved and consumed: `review-af4bcea9f41b811e`; one informational body-read cancellation warning deferred to later work | `git revert 71a7cd2`; `git revert 97c9166` |
 | PFF-002 | `bf248f2`, `a603cbe`, `593a199` | 418, including the bounded correction | focused/full/race/vet/build/mod/gofmt/Windows compile/diff PASS | one initial workload login publishes a memory-only session; protected files reject FIFOs without blocking; the same client reads the namespaced secret with no whoami or fallback | approved and consumed: `review-ec31cc20a6e8cef4` | `git revert 593a199`; then `git revert a603cbe`; then `git revert bf248f2` |
 | PFF-003 | `4f66151`, `b02e479` | 455, including the 93-line advisory follow-up | focused/full/repeated/race/vet/build/mod/gofmt/Windows compile/diff PASS | eight concurrent expired reads share one reauth; pre-canceled work performs zero credential I/O; waiter cancellation, failed-flight retry, real stale-generation rejection and terminal secret `401` verified | approved and consumed: `review-f501c5126a63eb76`; follow-up approved and consumed: `review-5ae809ae92b112cb` | `git revert b02e479`; then `git revert 4f66151` |
-| PFF-004 | pending | pending | pending | Terraform 1.10.5/1.11.4 matrix | pending | revert PFF-004 work-unit commit(s) |
+| PFF-004 | `d6cd027`, `2fecdcd`, `5a71860` | 395 excluding generated docs; 415 total | focused/full/race/vet/build/mod/tidy/generate/gofmt/Terraform fmt/diff PASS | Terraform 1.10.5/1.11.4 workload matrix PASS; exact lifecycle counts and leak scans PASS | approved and consumed: `review-9aec4c2f9412f982`; informational slow-runner timing advisory retained | `git revert 5a71860`; then `git revert 2fecdcd`; then `git revert d6cd027` |
 
 PFF-001 functional rollback authority is `git revert 97c9166`; documentation commits preserve evidence history and are not an executable rollback sequence.
 ## Delivery and rollback
@@ -322,10 +322,47 @@ PFF-001 functional rollback authority is `git revert 97c9166`; documentation com
 - [x] PFF-003 — Memory-only session and bounded reauthentication, including the
   separate pre-cancel, diagnostic-classification, and stale-flight proof
   follow-up.
-- [ ] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
+- [x] PFF-004 — Runtime acceptance, leak canaries, and user documentation.
+- [ ] Run the separately authorized GoVault fixture parity test before declaring
+  Phase F complete.
 
 ## Next step
 
-PFF-003 is complete locally. Await explicit authorization before PFF-004;
-runtime acceptance, leak-canary scanning and user documentation remain out of
-scope until then.
+Provider-side Phase F work is complete locally. Obtain separate authorization
+to run the exact fixture version/hash parity test in GoVault before declaring
+Phase F complete. No GoVault checkout was used by provider runtime acceptance.
+
+## PFF-004 runtime evidence
+
+- Candidate: commit `5a718603b1954b2b1df7ea1697d995f5f262beec`, tree
+  `4056491f38eb7338061dd2b88f5c126b91f97750`.
+- Runtime command:
+
+  ```bash
+  TF_ACC_TERRAFORM_1_10=/home/furia/.cache/govault-terraform-acceptance/1.10.5/terraform \
+  TF_ACC_TERRAFORM_1_11=/home/furia/.cache/govault-terraform-acceptance/1.11.4/terraform \
+  go test . -run '^TestTerraformEphemeralAcceptance$' -count=1 -v
+  ```
+
+- Both pinned versions passed. Per version, workload request counts were three
+  successful logins, four successful secret reads, one terminal login and
+  secret read, and one denied login with zero denied secret reads.
+- Scanned surfaces: plan, show JSON, apply, state pull, bounded stdout/stderr,
+  `TF_LOG`, the complete temporary tree, diagnostics, README, examples, and
+  generated documentation.
+- Final `TF_LOG` SHA-256 values:
+  - Terraform 1.10.5: token `542dc7b4289b828300d85e69cd382daf4a892e4fa50ce32797cbf8139850800f`,
+    workload success `bc88dc37fd1d4ee829fb0235902a06e8cddc42cbd211b0313aa0f15f855e937d`,
+    terminal `92d777337036d54d720592a2caac3dd1bfc07e595ac3724c9972d88c76134751`,
+    denied `59839eb40c8c78e0e5b54597c8943f0a811aee453980caf3cba1613b55fac5bb`.
+  - Terraform 1.11.4: token `7c946a56d14fc62e4777c626e17335faae4e12612ed89e30480defc06f47fad6`,
+    workload success `f2543fd68d2a9af50c032e117306bebe88867e088f95c7fafb047ef34587a145`,
+    terminal `3437df6b3a3b8cc27284619199d6dfca751836f878fcba544de58f1ed0e9c4ba`,
+    denied `4b7a3853b549d9434d78412dfa5a59b279e72159917b8c7311d870aff09b55f3`.
+- RDD first found incomplete lifecycle scanning and a permissive login oracle;
+  commit `2fecdcd` corrected both within 69 of 118 allowed lines. The cumulative
+  candidate was then approved and consumed under
+  `review-9aec4c2f9412f982`. Advisory `R3-1` notes that the four-second runtime
+  expiry window could be sensitive on unusually slow runners; repeated local
+  Terraform 1.10.5/1.11.4 runs were stable, and deterministic clock behavior is
+  additionally covered by the PFF-003 unit suite.
