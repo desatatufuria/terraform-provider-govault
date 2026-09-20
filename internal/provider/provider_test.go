@@ -42,10 +42,8 @@ func TestSchemaContainsOnlyNonSecretSelectors(t *testing.T) {
 
 	s := providerSchema(t)
 	want := map[string]bool{
-		"address":      true,
-		"auth_method":  true,
-		"token_env":    true,
-		"ca_cert_file": true,
+		"address": true, "auth_method": true, "token_env": true, "ca_cert_file": true,
+		"workload_role_ref": true, "workload_assertion_env": true, "workload_assertion_file": true,
 	}
 	if len(s.Attributes) != len(want) {
 		t.Fatalf("got %d attributes, want %d: %#v", len(s.Attributes), len(want), s.Attributes)
@@ -68,11 +66,12 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 		authMethod any
 		tokenEnv   any
 		caCertFile any
+		workload   []any
 		wantError  string
 	}{
 		"unsupported authentication": {
 			address:    "https://govault.example.com",
-			authMethod: "workload",
+			authMethod: "other",
 			tokenEnv:   nil,
 			caCertFile: nil,
 			wantError:  "Unsupported authentication method",
@@ -112,6 +111,26 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 			caCertFile: nil,
 			wantError:  "Missing token environment selector",
 		},
+		"token rejects workload selector": {
+			address: "https://govault.example.com", authMethod: "token", workload: []any{"role", nil, nil},
+			wantError: "Invalid token authentication selectors",
+		},
+		"workload requires role": {
+			address: "https://govault.example.com", authMethod: "workload", workload: []any{nil, "ASSERTION", nil},
+			wantError: "Missing workload role reference",
+		},
+		"workload rejects token selector": {
+			address: "https://govault.example.com", authMethod: "workload", tokenEnv: "TOKEN", workload: []any{"role", "ASSERTION", nil},
+			wantError: "Invalid workload authentication selectors",
+		},
+		"workload requires exactly one source": {
+			address: "https://govault.example.com", authMethod: "workload", workload: []any{"role", nil, nil},
+			wantError: "Invalid workload assertion source",
+		},
+		"workload rejects dual source": {
+			address: "https://govault.example.com", authMethod: "workload", workload: []any{"role", "ASSERTION", "/assertion"},
+			wantError: "Invalid workload assertion source",
+		},
 	}
 
 	for name, test := range tests {
@@ -123,7 +142,7 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 				return "", false
 			}}
 			s := providerSchema(t)
-			request := provider.ConfigureRequest{Config: configFor(s, test.address, test.authMethod, test.tokenEnv, test.caCertFile)}
+			request := provider.ConfigureRequest{Config: configFor(s, test.address, test.authMethod, test.tokenEnv, test.caCertFile, test.workload...)}
 			var response provider.ConfigureResponse
 
 			p.Configure(context.Background(), request, &response)
@@ -219,6 +238,44 @@ func TestConfigureAuthenticatesUsingOnlySelectedEnvironment(t *testing.T) {
 	}
 }
 
+func TestConfigureWorkloadLoginThenReadsSecret(t *testing.T) {
+	const assertion, session = "external-assertion", "gv.workload-session"
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/auth/workload/login":
+			if r.Header.Get("Authorization") != "" {
+				t.Error("workload login sent authorization header")
+			}
+			_, _ = w.Write([]byte(`{"token":"` + session + `","access_token":"` + session + `","namespace":"team-a","expires_at":4102444800}`))
+		case "/ns/team-a/secrets/item":
+			if r.Header.Get("Authorization") != "Bearer "+session {
+				t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+			}
+			_, _ = w.Write([]byte(`{"value":"secret","version":1}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	p := &goVaultProvider{lookupEnv: mapLookup(map[string]string{"OIDC_ASSERTION": assertion})}
+	s := providerSchema(t)
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "OIDC_ASSERTION", nil)}
+	var response provider.ConfigureResponse
+	p.Configure(context.Background(), request, &response)
+	client, ok := response.EphemeralResourceData.(*govaultclient.Client)
+	if response.Diagnostics.HasError() || !ok {
+		t.Fatalf("configure diagnostics = %v", response.Diagnostics)
+	}
+	if _, err := client.ReadSecret(context.Background(), "app/key", 0); err != nil {
+		t.Fatalf("read secret: %v", err)
+	}
+	if strings.Join(paths, ",") != "/auth/workload/login,/ns/team-a/secrets/item" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
 func TestConfigureDiagnosticsRedactTokenAndResponseBody(t *testing.T) {
 	const (
 		token  = "gv.provider-canary"
@@ -258,19 +315,25 @@ func providerSchema(t *testing.T) providerschema.Schema {
 	return response.Schema
 }
 
-func configFor(s providerschema.Schema, address, authMethod, tokenEnv, caCertFile any) tfsdk.Config {
+func configFor(s providerschema.Schema, address, authMethod, tokenEnv, caCertFile any, workload ...any) tfsdk.Config {
+	values := []any{nil, nil, nil}
+	copy(values, workload)
 	objectType := tftypes.Object{AttributeTypes: map[string]tftypes.Type{
-		"address":      tftypes.String,
-		"auth_method":  tftypes.String,
-		"token_env":    tftypes.String,
-		"ca_cert_file": tftypes.String,
+		"address":           tftypes.String,
+		"auth_method":       tftypes.String,
+		"token_env":         tftypes.String,
+		"ca_cert_file":      tftypes.String,
+		"workload_role_ref": tftypes.String, "workload_assertion_env": tftypes.String, "workload_assertion_file": tftypes.String,
 	}}
 	return tfsdk.Config{
 		Raw: tftypes.NewValue(objectType, map[string]tftypes.Value{
-			"address":      tftypes.NewValue(tftypes.String, address),
-			"auth_method":  tftypes.NewValue(tftypes.String, authMethod),
-			"token_env":    tftypes.NewValue(tftypes.String, tokenEnv),
-			"ca_cert_file": tftypes.NewValue(tftypes.String, caCertFile),
+			"address":                 tftypes.NewValue(tftypes.String, address),
+			"auth_method":             tftypes.NewValue(tftypes.String, authMethod),
+			"token_env":               tftypes.NewValue(tftypes.String, tokenEnv),
+			"ca_cert_file":            tftypes.NewValue(tftypes.String, caCertFile),
+			"workload_role_ref":       tftypes.NewValue(tftypes.String, values[0]),
+			"workload_assertion_env":  tftypes.NewValue(tftypes.String, values[1]),
+			"workload_assertion_file": tftypes.NewValue(tftypes.String, values[2]),
 		}),
 		Schema: s,
 	}

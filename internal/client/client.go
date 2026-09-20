@@ -58,6 +58,7 @@ type Client struct {
 
 	mu        sync.RWMutex
 	namespace string
+	expiresAt time.Time
 }
 
 // WorkloadSession is the short-lived session returned by workload login.
@@ -254,11 +255,14 @@ func decodeOneJSON(body []byte, target any) error {
 }
 
 func (c *Client) Authenticate(ctx context.Context) error {
+	c.mu.RLock()
+	token := c.token
+	c.mu.RUnlock()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+whoAmIPath, nil)
 	if err != nil {
 		return ErrRequestFailed
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
 
 	response, err := c.httpClient.Do(request)
@@ -312,8 +316,22 @@ func (c *Client) Namespace() string {
 	return c.namespace
 }
 
+// InstallWorkloadSession atomically makes a successful workload session usable
+// by authenticated protocol operations. Session material remains in memory.
+func (c *Client) InstallWorkloadSession(session WorkloadSession) error {
+	if strings.TrimSpace(session.Token) == "" || strings.TrimSpace(session.Namespace) == "" || session.ExpiresAt.IsZero() {
+		return ErrInvalidConfiguration
+	}
+	c.mu.Lock()
+	c.token, c.namespace, c.expiresAt = session.Token, session.Namespace, session.ExpiresAt
+	c.mu.Unlock()
+	return nil
+}
+
 func (c *Client) ReadSecret(ctx context.Context, path string, version int64) (Secret, error) {
-	namespace := c.Namespace()
+	c.mu.RLock()
+	token, namespace := c.token, c.namespace
+	c.mu.RUnlock()
 	if namespace == "" || strings.TrimSpace(path) == "" || version < 0 {
 		return Secret{}, ErrInvalidConfiguration
 	}
@@ -326,7 +344,7 @@ func (c *Client) ReadSecret(ctx context.Context, path string, version int64) (Se
 	if err != nil {
 		return Secret{}, ErrRequestFailed
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
 	response, err := c.httpClient.Do(request)
 	if err != nil {
