@@ -3,7 +3,7 @@
 ## Status
 
 - Feature: in progress
-- Current task: `PGA-001`
+- Current task: `PGA-002`
 - Branch: `tfp-g-provider-approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -78,7 +78,7 @@ token into Terraform configuration, plans, or state.
 
 ## Tasks
 
-- [-] **PGA-001 — Add the bounded AppRole client exchange**
+- [x] **PGA-001 — Add the bounded AppRole client exchange**
   - Route: delegated direct.
   - Trigger evidence: protocol client, response validation, session install,
     and exhaustive transport tests span multiple non-trivial files.
@@ -89,9 +89,28 @@ token into Terraform configuration, plans, or state.
     - Equal non-empty token aliases, namespace, and future expiry required.
     - Returned session remains memory-only and reusable by the existing client.
   - Checks: focused client tests, `go test ./internal/client`, race, formatting.
-  - Evidence: pending.
+  - Evidence:
+    - `Client.LoginAppRole` implements one root or namespaced request with no
+      retry, bounded response parsing, sanitized failures, strict token aliases,
+      namespace, creation, and expiry validation.
+    - `Client.InstallAppRoleSession` atomically installs only a valid in-memory
+      bearer, namespace, and expiry for existing secret reads.
+    - Tests cover exact root/namespaced contracts, invalid input before I/O,
+      one-attempt status and transport failures, redaction, malformed/oversized
+      responses, invalid session fields, and harmless server-ahead clock skew.
+    - Focused: `go test ./internal/client -run 'TestLoginAppRole' -count=1`
+      — passed.
+    - Package: `go test ./internal/client` — passed.
+    - Race: `go test -race ./internal/client -run 'TestLoginAppRole' -count=1`
+      — passed.
+    - Formatting: `gofmt` and `git diff --check` — passed.
+    - Runtime harness: N/A; this work unit is the bounded HTTP client boundary.
+      Terraform runtime acceptance belongs to `PGA-003`.
+    - Rollback: remove `internal/client/approle_login_test.go` and only the
+      AppRole additions in `internal/client/client.go`.
+    - Work-unit commit: pending commit identity.
 
-- [ ] **PGA-002 — Wire explicit AppRole provider configuration**
+- [-] **PGA-002 — Wire explicit AppRole provider configuration**
   - Route: delegated direct.
   - Trigger evidence: schema, environment selection, configure flow, method
     matrix, and end-to-end provider tests span multiple non-trivial files.
@@ -121,5 +140,5 @@ token into Terraform configuration, plans, or state.
 
 ## Progress and next step
 
-Exploration is complete against the standalone provider and the hardened
-GoVault backend. Implement `PGA-001` first; no remote operation is authorized.
+`PGA-001` is implemented and locally verified. Implement `PGA-002` next; no
+remote operation is authorized.

@@ -25,6 +25,7 @@ const (
 	whoAmIPath                = "/auth/whoami"
 	maxWhoAmIBody             = 1 << 20
 	maxSecretBody             = 7 << 20
+	appRoleLoginPath          = "/auth/login"
 	workloadLoginPath         = "/auth/workload/login"
 	maxWorkloadAssertionBytes = 262144
 	maxWorkloadLoginBody      = 1 << 20
@@ -65,6 +66,14 @@ type Client struct {
 type WorkloadSession struct {
 	Token     string
 	Namespace string
+	ExpiresAt time.Time
+}
+
+// AppRoleSession is the short-lived session returned by AppRole login.
+type AppRoleSession struct {
+	Token     string
+	Namespace string
+	CreatedAt time.Time
 	ExpiresAt time.Time
 }
 
@@ -201,6 +210,90 @@ func (c *Client) LoginWorkload(ctx context.Context, roleRef, assertion string) (
 	return WorkloadSession{Token: result.Token, Namespace: result.Namespace, ExpiresAt: time.Unix(result.ExpiresAt, 0)}, nil
 }
 
+// LoginAppRole exchanges one RoleID and SecretID for one GoVault session.
+// It performs exactly one HTTP request and never retries or follows redirects.
+func (c *Client) LoginAppRole(ctx context.Context, namespace, roleID, secretID string) (AppRoleSession, error) {
+	if strings.TrimSpace(roleID) == "" || strings.TrimSpace(secretID) == "" ||
+		(namespace != "" && strings.TrimSpace(namespace) == "") {
+		return AppRoleSession{}, ErrInvalidConfiguration
+	}
+	requestBody, err := json.Marshal(struct {
+		Method      string `json:"method"`
+		Credentials struct {
+			RoleID   string `json:"role_id"`
+			SecretID string `json:"secret_id"`
+		} `json:"credentials"`
+	}{
+		Method: "approle",
+		Credentials: struct {
+			RoleID   string `json:"role_id"`
+			SecretID string `json:"secret_id"`
+		}{RoleID: roleID, SecretID: secretID},
+	})
+	if err != nil {
+		return AppRoleSession{}, ErrRequestFailed
+	}
+	path := appRoleLoginPath
+	if namespace != "" {
+		path = "/ns/" + url.PathEscape(namespace) + appRoleLoginPath
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(requestBody))
+	if err != nil {
+		return AppRoleSession{}, ErrRequestFailed
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return AppRoleSession{}, sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+	payload, err := readBoundedBody(response.Body, maxWorkloadLoginBody)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return AppRoleSession{}, sanitizedRequestError(err)
+		}
+		return AppRoleSession{}, ErrInvalidResponse
+	}
+	if response.StatusCode != http.StatusOK {
+		return AppRoleSession{}, appRoleLoginFailure(response.StatusCode)
+	}
+	var result struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+		Namespace   string `json:"namespace"`
+		CreatedAt   int64  `json:"created_at"`
+		ExpiresAt   int64  `json:"expires_at"`
+	}
+	now := c.now().Unix()
+	if decodeOneJSON(payload, &result) != nil || result.Token == "" || result.Token != result.AccessToken ||
+		strings.TrimSpace(result.Namespace) == "" || result.CreatedAt <= 0 ||
+		result.ExpiresAt <= result.CreatedAt || result.ExpiresAt <= now {
+		return AppRoleSession{}, ErrInvalidResponse
+	}
+	return AppRoleSession{
+		Token: result.Token, Namespace: result.Namespace,
+		CreatedAt: time.Unix(result.CreatedAt, 0), ExpiresAt: time.Unix(result.ExpiresAt, 0),
+	}, nil
+}
+
+func appRoleLoginFailure(statusCode int) error {
+	switch statusCode {
+	case http.StatusBadRequest:
+		return ErrInvalidRequest
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusForbidden:
+		return ErrForbidden
+	case http.StatusTooManyRequests:
+		return ErrRateLimited
+	case http.StatusServiceUnavailable:
+		return ErrServiceUnavailable
+	default:
+		return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, statusCode)
+	}
+}
+
 func workloadLoginFailure(response *http.Response, body []byte) error {
 	want := map[int]struct {
 		code string
@@ -329,6 +422,20 @@ func (c *Client) Namespace() string {
 // by authenticated protocol operations. Session material remains in memory.
 func (c *Client) InstallWorkloadSession(session WorkloadSession) error {
 	if strings.TrimSpace(session.Token) == "" || strings.TrimSpace(session.Namespace) == "" || session.ExpiresAt.IsZero() {
+		return ErrInvalidConfiguration
+	}
+	c.mu.Lock()
+	c.token, c.namespace, c.expiresAt = session.Token, session.Namespace, session.ExpiresAt
+	c.mu.Unlock()
+	return nil
+}
+
+// InstallAppRoleSession atomically makes a successful AppRole session usable
+// by authenticated protocol operations. Session material remains in memory.
+func (c *Client) InstallAppRoleSession(session AppRoleSession) error {
+	now := c.now()
+	if strings.TrimSpace(session.Token) == "" || strings.TrimSpace(session.Namespace) == "" ||
+		session.CreatedAt.IsZero() || !session.ExpiresAt.After(session.CreatedAt) || !session.ExpiresAt.After(now) {
 		return ErrInvalidConfiguration
 	}
 	c.mu.Lock()
