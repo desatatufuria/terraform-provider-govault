@@ -2,8 +2,8 @@
 
 ## Status
 
-- Feature: in progress
-- Current task: `PGA-003`
+- Feature: implementation complete
+- Current task: `PGA-003` complete
 - Branch: `tfp-g-provider-approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -141,9 +141,9 @@ token into Terraform configuration, plans, or state.
       `PGA-003`.
     - Rollback: remove only the AppRole schema/configure branches and AppRole
       cases from `internal/provider/provider.go` and `provider_test.go`.
-    - Work-unit commit: pending commit identity.
+    - Work-unit commit: `4c4f3abebec83a351db4dfa8a48d8b04e29014c5`.
 
-- [-] **PGA-003 — Prove runtime secrecy and document usage**
+- [x] **PGA-003 — Prove runtime secrecy and document usage**
   - Route: delegated direct.
   - Trigger evidence: Terraform acceptance harness, leak canaries, examples,
     README, generated docs, and repository checks span multiple files.
@@ -155,9 +155,33 @@ token into Terraform configuration, plans, or state.
       the no-retry behavior.
   - Checks: full tests, acceptance matrix, generation drift, vet, build,
     formatting.
-  - Evidence: pending.
+  - Evidence:
+    - Terraform 1.10.5 and 1.11.4 runtime acceptance covers root and namespaced
+      AppRole login, verified TLS, one login/read per `plan` and `apply`, and no
+      additional authentication during `show` or `state pull`.
+    - RoleID, SecretID, issued token, secret value, and raw response-body
+      canaries remain absent from Terraform output, plans, state, TF_LOG,
+      diagnostics, repository artifacts, examples, and documentation.
+    - README and provider examples lead with the safe environment-only AppRole
+      path, explain `approle_namespace`, durable identity versus short-lived
+      tokens, and the deliberate no-retry rule for limited SecretIDs.
+    - Runtime: `TF_ACC_TERRAFORM_1_10=... TF_ACC_TERRAFORM_1_11=...
+      go test ./... -run '^TestTerraformEphemeralAcceptance$' -count=1` —
+      passed for Terraform 1.10.5 and 1.11.4.
+    - Full: `go test ./...`, `go test -race ./...`, `go vet ./...`, and
+      `go build ./...` — passed.
+    - Generation: `GOPROXY=file:///go/pkg/mod/cache/download GOSUMDB=off
+      go generate ./...` reproduced the same diff without network access. An
+      initial run with the wrong home-relative cache path failed before making
+      changes and was corrected.
+    - Formatting: `gofmt` and `git diff --check` — passed.
+    - Rollback: revert only `acceptance_test.go`, `repository_test.go`,
+      `README.md`, `examples/provider/provider.tf`, and generated
+      `docs/index.md` AppRole additions.
+    - Work-unit commit: pending commit identity.
 
 ## Progress and next step
 
-`PGA-001` and `PGA-002` are implemented and locally verified. Implement
-`PGA-003` next; no remote operation is authorized.
+`PGA-001` through `PGA-003` are implemented and locally verified. The next step
+is the user-directed review or delivery decision; no remote operation is
+authorized.
