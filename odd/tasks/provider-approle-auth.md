@@ -3,7 +3,7 @@
 ## Status
 
 - Feature: in progress
-- Current task: `PGA-002`
+- Current task: `PGA-003`
 - Branch: `tfp-g-provider-approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -108,9 +108,9 @@ token into Terraform configuration, plans, or state.
       Terraform runtime acceptance belongs to `PGA-003`.
     - Rollback: remove `internal/client/approle_login_test.go` and only the
       AppRole additions in `internal/client/client.go`.
-    - Work-unit commit: pending commit identity.
+    - Work-unit commit: `a10ac2bcd259b37abb9d0ca91a1377dec09da1ca`.
 
-- [-] **PGA-002 — Wire explicit AppRole provider configuration**
+- [x] **PGA-002 — Wire explicit AppRole provider configuration**
   - Route: delegated direct.
   - Trigger evidence: schema, environment selection, configure flow, method
     matrix, and end-to-end provider tests span multiple non-trivial files.
@@ -122,9 +122,28 @@ token into Terraform configuration, plans, or state.
     - Configure logs in once and publishes an authenticated memory-only client.
   - Checks: focused provider tests, `go test ./internal/provider`, race,
     formatting.
-  - Evidence: pending.
+  - Evidence:
+    - Provider schema accepts explicit `auth_method = "approle"` and exposes
+      only the non-secret `approle_namespace` selector; RoleID and SecretID do
+      not exist in Terraform schema.
+    - Configure reads `GOVAULT_ROLE_ID` and `GOVAULT_SECRET_ID` exactly once,
+      rejects absent or empty credentials and crossed selectors before network
+      I/O, then performs one login and installs the memory-only session.
+    - Root and namespaced tests configure the provider and read a secret through
+      the existing ephemeral client boundary; diagnostics redact credentials
+      and response bodies.
+    - Focused AppRole provider tests — passed.
+    - Package: `go test ./internal/provider` — passed.
+    - Race: focused AppRole provider tests with `-race` — passed.
+    - Broader: `go test ./...` — passed.
+    - Formatting: `gofmt` and `git diff --check` — passed.
+    - Runtime harness: N/A; Terraform 1.10/1.11 execution belongs to
+      `PGA-003`.
+    - Rollback: remove only the AppRole schema/configure branches and AppRole
+      cases from `internal/provider/provider.go` and `provider_test.go`.
+    - Work-unit commit: pending commit identity.
 
-- [ ] **PGA-003 — Prove runtime secrecy and document usage**
+- [-] **PGA-003 — Prove runtime secrecy and document usage**
   - Route: delegated direct.
   - Trigger evidence: Terraform acceptance harness, leak canaries, examples,
     README, generated docs, and repository checks span multiple files.
@@ -140,5 +159,5 @@ token into Terraform configuration, plans, or state.
 
 ## Progress and next step
 
-`PGA-001` is implemented and locally verified. Implement `PGA-002` next; no
-remote operation is authorized.
+`PGA-001` and `PGA-002` are implemented and locally verified. Implement
+`PGA-003` next; no remote operation is authorized.

@@ -21,10 +21,13 @@ import (
 
 const (
 	// RegistryAddress is the fully-qualified Terraform Registry provider address.
-	RegistryAddress = "registry.terraform.io/desatatufuria/govault"
-	defaultTokenEnv = "GOVAULT_TOKEN"
-	tokenAuth       = "token"
-	workloadAuth    = "workload"
+	RegistryAddress  = "registry.terraform.io/desatatufuria/govault"
+	defaultTokenEnv  = "GOVAULT_TOKEN"
+	appRoleRoleEnv   = "GOVAULT_ROLE_ID"
+	appRoleSecretEnv = "GOVAULT_SECRET_ID"
+	tokenAuth        = "token"
+	workloadAuth     = "workload"
+	appRoleAuth      = "approle"
 )
 
 var (
@@ -44,6 +47,7 @@ type providerModel struct {
 	WorkloadRoleRef       types.String `tfsdk:"workload_role_ref"`
 	WorkloadAssertionEnv  types.String `tfsdk:"workload_assertion_env"`
 	WorkloadAssertionFile types.String `tfsdk:"workload_assertion_file"`
+	AppRoleNamespace      types.String `tfsdk:"approle_namespace"`
 	CACertFile            types.String `tfsdk:"ca_cert_file"`
 }
 
@@ -61,7 +65,7 @@ func (p *goVaultProvider) Metadata(_ context.Context, _ provider.MetadataRequest
 
 func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Configure the GoVault provider with explicit token or workload authentication, verified TLS, and server-derived namespace authority.",
+		Description: "Configure the GoVault provider with explicit token, workload, or AppRole authentication, verified TLS, and server-derived namespace authority.",
 		Attributes: map[string]schema.Attribute{
 			"address": schema.StringAttribute{
 				Description: "Base HTTPS address of the GoVault API.",
@@ -71,10 +75,10 @@ func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				},
 			},
 			"auth_method": schema.StringAttribute{
-				Description: "Explicit authentication method: token or workload.",
+				Description: "Explicit authentication method: token, workload, or approle.",
 				Required:    true,
 				Validators: []validator.String{
-					stringvalidator.OneOf(tokenAuth, workloadAuth),
+					stringvalidator.OneOf(tokenAuth, workloadAuth, appRoleAuth),
 				},
 			},
 			"token_env": schema.StringAttribute{
@@ -87,6 +91,10 @@ func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 			"workload_role_ref":       schema.StringAttribute{Optional: true, Description: "Workload mode only: server-defined GoVault workload role reference."},
 			"workload_assertion_env":  schema.StringAttribute{Optional: true, Description: "Workload mode only: name of the environment variable supplying the assertion."},
 			"workload_assertion_file": schema.StringAttribute{Optional: true, Description: "Workload mode only: path to a protected regular assertion file on Unix-like systems. File assertions are unsupported on Windows."},
+			"approle_namespace": schema.StringAttribute{
+				Optional: true, Description: "AppRole mode only: optional GoVault namespace containing the AppRole.",
+				Validators: []validator.String{stringvalidator.LengthAtLeast(1)},
+			},
 			"ca_cert_file": schema.StringAttribute{
 				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault.",
 				Optional:    true,
@@ -135,13 +143,13 @@ func (p *goVaultProvider) Configure(ctx context.Context, req provider.ConfigureR
 
 func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) secretReader {
 	method := config.AuthMethod.ValueString()
-	if method != tokenAuth && method != workloadAuth {
-		diagnostics.AddError("Unsupported authentication method", "The provider auth_method must be either \"token\" or \"workload\".")
+	if method != tokenAuth && method != workloadAuth && method != appRoleAuth {
+		diagnostics.AddError("Unsupported authentication method", "The provider auth_method must be \"token\", \"workload\", or \"approle\".")
 		return nil
 	}
 	if method == tokenAuth {
-		if !config.WorkloadRoleRef.IsNull() || !config.WorkloadAssertionEnv.IsNull() || !config.WorkloadAssertionFile.IsNull() {
-			diagnostics.AddError("Invalid token authentication selectors", "Workload selectors cannot be configured when auth_method is token.")
+		if !config.WorkloadRoleRef.IsNull() || !config.WorkloadAssertionEnv.IsNull() || !config.WorkloadAssertionFile.IsNull() || !config.AppRoleNamespace.IsNull() {
+			diagnostics.AddError("Invalid token authentication selectors", "Workload and AppRole selectors cannot be configured when auth_method is token.")
 			return nil
 		}
 		tokenEnv := defaultTokenEnv
@@ -168,9 +176,40 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 		}
 		return client
 	}
-	if !config.TokenEnv.IsNull() {
-		diagnostics.AddError("Invalid workload authentication selectors", "token_env cannot be configured when auth_method is workload.")
+	if method == workloadAuth && (!config.TokenEnv.IsNull() || !config.AppRoleNamespace.IsNull()) {
+		diagnostics.AddError("Invalid workload authentication selectors", "Token and AppRole selectors cannot be configured when auth_method is workload.")
 		return nil
+	}
+	if method == appRoleAuth {
+		if !config.TokenEnv.IsNull() || !config.WorkloadRoleRef.IsNull() || !config.WorkloadAssertionEnv.IsNull() || !config.WorkloadAssertionFile.IsNull() {
+			diagnostics.AddError("Invalid AppRole authentication selectors", "Token and workload selectors cannot be configured when auth_method is approle.")
+			return nil
+		}
+		if !config.AppRoleNamespace.IsNull() && strings.TrimSpace(config.AppRoleNamespace.ValueString()) == "" {
+			diagnostics.AddError("Invalid AppRole namespace", "approle_namespace must be non-empty when configured.")
+			return nil
+		}
+		roleID, roleOK := lookupEnv(appRoleRoleEnv)
+		secretID, secretOK := lookupEnv(appRoleSecretEnv)
+		if !roleOK || !secretOK || strings.TrimSpace(roleID) == "" || strings.TrimSpace(secretID) == "" {
+			diagnostics.AddError("Missing AppRole credentials", "GOVAULT_ROLE_ID and GOVAULT_SECRET_ID must both be set and non-empty.")
+			return nil
+		}
+		client, err := govaultclient.NewProtocolClient(govaultclient.Config{Address: config.Address.ValueString(), CACertFile: config.CACertFile.ValueString()})
+		if err != nil {
+			diagnostics.AddError("Invalid GoVault client configuration", err.Error())
+			return nil
+		}
+		session, err := client.LoginAppRole(ctx, config.AppRoleNamespace.ValueString(), roleID, secretID)
+		if err != nil {
+			diagnostics.AddError("GoVault AppRole authentication failed", err.Error())
+			return nil
+		}
+		if err := client.InstallAppRoleSession(session); err != nil {
+			diagnostics.AddError("Invalid GoVault AppRole session", err.Error())
+			return nil
+		}
+		return client
 	}
 	roleRef := config.WorkloadRoleRef.ValueString()
 	if config.WorkloadRoleRef.IsNull() || strings.TrimSpace(roleRef) == "" {
@@ -219,6 +258,7 @@ func validateKnownConfiguration(config providerModel) diag.Diagnostics {
 		"workload_role_ref":       config.WorkloadRoleRef,
 		"workload_assertion_env":  config.WorkloadAssertionEnv,
 		"workload_assertion_file": config.WorkloadAssertionFile,
+		"approle_namespace":       config.AppRoleNamespace,
 		"ca_cert_file":            config.CACertFile,
 	}
 

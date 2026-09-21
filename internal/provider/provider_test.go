@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -44,6 +45,7 @@ func TestSchemaContainsOnlyNonSecretSelectors(t *testing.T) {
 	want := map[string]bool{
 		"address": true, "auth_method": true, "token_env": true, "ca_cert_file": true,
 		"workload_role_ref": true, "workload_assertion_env": true, "workload_assertion_file": true,
+		"approle_namespace": true,
 	}
 	if len(s.Attributes) != len(want) {
 		t.Fatalf("got %d attributes, want %d: %#v", len(s.Attributes), len(want), s.Attributes)
@@ -56,6 +58,11 @@ func TestSchemaContainsOnlyNonSecretSelectors(t *testing.T) {
 	if _, exists := s.Attributes["token"]; exists {
 		t.Fatal("provider schema must not expose an inline token")
 	}
+	for _, name := range []string{"role_id", "secret_id"} {
+		if _, exists := s.Attributes[name]; exists {
+			t.Fatalf("provider schema must not expose %s", name)
+		}
+	}
 }
 
 func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
@@ -66,7 +73,7 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 		authMethod any
 		tokenEnv   any
 		caCertFile any
-		workload   []any
+		selectors  []any
 		wantError  string
 	}{
 		"unsupported authentication": {
@@ -104,6 +111,10 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 			caCertFile: nil,
 			wantError:  "Unknown provider configuration",
 		},
+		"unknown AppRole namespace": {
+			address: "https://govault.example.com", authMethod: appRoleAuth,
+			selectors: []any{nil, nil, nil, tftypes.UnknownValue}, wantError: "Unknown provider configuration",
+		},
 		"empty token environment selector": {
 			address:    "https://govault.example.com",
 			authMethod: "token",
@@ -112,24 +123,44 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 			wantError:  "Missing token environment selector",
 		},
 		"token rejects workload selector": {
-			address: "https://govault.example.com", authMethod: "token", workload: []any{"role", nil, nil},
+			address: "https://govault.example.com", authMethod: "token", selectors: []any{"role", nil, nil},
+			wantError: "Invalid token authentication selectors",
+		},
+		"token rejects AppRole namespace": {
+			address: "https://govault.example.com", authMethod: tokenAuth, selectors: []any{nil, nil, nil, "team-a"},
 			wantError: "Invalid token authentication selectors",
 		},
 		"workload requires role": {
-			address: "https://govault.example.com", authMethod: "workload", workload: []any{nil, "ASSERTION", nil},
+			address: "https://govault.example.com", authMethod: "workload", selectors: []any{nil, "ASSERTION", nil},
 			wantError: "Missing workload role reference",
 		},
 		"workload rejects token selector": {
-			address: "https://govault.example.com", authMethod: "workload", tokenEnv: "TOKEN", workload: []any{"role", "ASSERTION", nil},
+			address: "https://govault.example.com", authMethod: "workload", tokenEnv: "TOKEN", selectors: []any{"role", "ASSERTION", nil},
+			wantError: "Invalid workload authentication selectors",
+		},
+		"workload rejects AppRole namespace": {
+			address: "https://govault.example.com", authMethod: workloadAuth, selectors: []any{"role", "ASSERTION", nil, "team-a"},
 			wantError: "Invalid workload authentication selectors",
 		},
 		"workload requires exactly one source": {
-			address: "https://govault.example.com", authMethod: "workload", workload: []any{"role", nil, nil},
+			address: "https://govault.example.com", authMethod: "workload", selectors: []any{"role", nil, nil},
 			wantError: "Invalid workload assertion source",
 		},
 		"workload rejects dual source": {
-			address: "https://govault.example.com", authMethod: "workload", workload: []any{"role", "ASSERTION", "/assertion"},
+			address: "https://govault.example.com", authMethod: "workload", selectors: []any{"role", "ASSERTION", "/assertion"},
 			wantError: "Invalid workload assertion source",
+		},
+		"AppRole rejects token selector": {
+			address: "https://govault.example.com", authMethod: appRoleAuth, tokenEnv: "TOKEN",
+			wantError: "Invalid AppRole authentication selectors",
+		},
+		"AppRole rejects workload selector": {
+			address: "https://govault.example.com", authMethod: appRoleAuth, selectors: []any{"role", nil, nil},
+			wantError: "Invalid AppRole authentication selectors",
+		},
+		"AppRole rejects empty namespace": {
+			address: "https://govault.example.com", authMethod: appRoleAuth, selectors: []any{nil, nil, nil, " "},
+			wantError: "Invalid AppRole namespace",
 		},
 	}
 
@@ -142,7 +173,7 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 				return "", false
 			}}
 			s := providerSchema(t)
-			request := provider.ConfigureRequest{Config: configFor(s, test.address, test.authMethod, test.tokenEnv, test.caCertFile, test.workload...)}
+			request := provider.ConfigureRequest{Config: configFor(s, test.address, test.authMethod, test.tokenEnv, test.caCertFile, test.selectors...)}
 			var response provider.ConfigureResponse
 
 			p.Configure(context.Background(), request, &response)
@@ -276,6 +307,148 @@ func TestConfigureWorkloadLoginThenReadsSecret(t *testing.T) {
 	}
 }
 
+func TestConfigureAppRoleRequiresBothFixedEnvironmentCredentials(t *testing.T) {
+	tests := map[string]map[string]string{
+		"both unset":      {},
+		"role ID unset":   {appRoleSecretEnv: "secret-id"},
+		"secret ID unset": {appRoleRoleEnv: "role-id"},
+		"role ID empty":   {appRoleRoleEnv: " ", appRoleSecretEnv: "secret-id"},
+		"secret ID empty": {appRoleRoleEnv: "role-id", appRoleSecretEnv: "\t"},
+	}
+	for name, environment := range tests {
+		t.Run(name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+			defer server.Close()
+
+			var lookups []string
+			p := &goVaultProvider{lookupEnv: func(name string) (string, bool) {
+				lookups = append(lookups, name)
+				value, ok := environment[name]
+				return value, ok
+			}}
+			s := providerSchema(t)
+			request := provider.ConfigureRequest{Config: configFor(s, server.URL, appRoleAuth, nil, writeServerCA(t, server))}
+			var response provider.ConfigureResponse
+			p.Configure(context.Background(), request, &response)
+
+			if got := strings.Join(lookups, ","); got != appRoleRoleEnv+","+appRoleSecretEnv {
+				t.Fatalf("environment lookups = %q", got)
+			}
+			if requests != 0 {
+				t.Fatalf("network requests = %d, want 0", requests)
+			}
+			if !hasDiagnosticSummary(response.Diagnostics.Errors(), "Missing AppRole credentials") {
+				t.Fatalf("diagnostics = %v", response.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestConfigureAppRoleLoginThenReadsSecret(t *testing.T) {
+	tests := map[string]struct {
+		namespace string
+		loginPath string
+		sessionNS string
+	}{
+		"root":       {loginPath: "/auth/login", sessionNS: "root"},
+		"namespaced": {namespace: "team-a", loginPath: "/ns/team-a/auth/login", sessionNS: "team-a"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			const roleID, secretID, token = "role-id", "secret-id", "gv.approle-session"
+			var paths, lookups []string
+			loginRequests := 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case test.loginPath:
+					loginRequests++
+					if r.Header.Get("Authorization") != "" {
+						t.Error("AppRole login sent authorization header")
+					}
+					var body struct {
+						Method      string `json:"method"`
+						Credentials struct {
+							RoleID   string `json:"role_id"`
+							SecretID string `json:"secret_id"`
+						} `json:"credentials"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("decode login: %v", err)
+					}
+					if body.Method != appRoleAuth || body.Credentials.RoleID != roleID || body.Credentials.SecretID != secretID {
+						t.Errorf("unexpected login body: %#v", body)
+					}
+					_, _ = fmt.Fprintf(w, `{"token":%q,"access_token":%q,"namespace":%q,"created_at":2000000000,"expires_at":4102444800}`, token, token, test.sessionNS)
+				case "/ns/" + test.sessionNS + "/secrets/item":
+					if r.Header.Get("Authorization") != "Bearer "+token {
+						t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+					}
+					_, _ = w.Write([]byte(`{"value":"secret","version":1}`))
+				default:
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			environment := map[string]string{appRoleRoleEnv: roleID, appRoleSecretEnv: secretID}
+			p := &goVaultProvider{lookupEnv: func(name string) (string, bool) {
+				lookups = append(lookups, name)
+				value, ok := environment[name]
+				return value, ok
+			}}
+			s := providerSchema(t)
+			request := provider.ConfigureRequest{Config: configFor(s, server.URL, appRoleAuth, nil, writeServerCA(t, server), nil, nil, nil, optionalString(test.namespace))}
+			var response provider.ConfigureResponse
+			p.Configure(context.Background(), request, &response)
+			client, ok := response.EphemeralResourceData.(secretReader)
+			if response.Diagnostics.HasError() || !ok {
+				t.Fatalf("configure diagnostics = %v", response.Diagnostics)
+			}
+			if _, err := client.ReadSecret(context.Background(), "app/key", 0); err != nil {
+				t.Fatalf("read secret: %v", err)
+			}
+			if loginRequests != 1 {
+				t.Fatalf("login requests = %d, want 1", loginRequests)
+			}
+			if got := strings.Join(lookups, ","); got != appRoleRoleEnv+","+appRoleSecretEnv {
+				t.Fatalf("environment lookups = %q", got)
+			}
+			if got := strings.Join(paths, ","); got != test.loginPath+",/ns/"+test.sessionNS+"/secrets/item" {
+				t.Fatalf("paths = %s", got)
+			}
+			if response.DataSourceData != nil || response.ResourceData != nil {
+				t.Fatal("AppRole must only configure ephemeral provider data")
+			}
+		})
+	}
+}
+
+func TestConfigureAppRoleDiagnosticsRedactCredentialsAndResponse(t *testing.T) {
+	const roleID, secretID, responseSecret = "role-id-canary", "secret-id-canary", "response-canary"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, roleID+" "+secretID+" "+responseSecret)
+	}))
+	defer server.Close()
+	p := &goVaultProvider{lookupEnv: mapLookup(map[string]string{appRoleRoleEnv: roleID, appRoleSecretEnv: secretID})}
+	s := providerSchema(t)
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, appRoleAuth, nil, writeServerCA(t, server))}
+	var response provider.ConfigureResponse
+	p.Configure(context.Background(), request, &response)
+
+	diagnostics := fmt.Sprint(response.Diagnostics)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("expected AppRole authentication diagnostic")
+	}
+	for _, canary := range []string{roleID, secretID, responseSecret} {
+		if strings.Contains(diagnostics, canary) {
+			t.Fatalf("diagnostics leaked %q: %s", canary, diagnostics)
+		}
+	}
+}
+
 func TestConfigureClassifiesLocalAssertionSourceFailure(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("local source failure reached network") }))
 	defer server.Close()
@@ -329,13 +502,14 @@ func providerSchema(t *testing.T) providerschema.Schema {
 }
 
 func configFor(s providerschema.Schema, address, authMethod, tokenEnv, caCertFile any, workload ...any) tfsdk.Config {
-	values := []any{nil, nil, nil}
+	values := []any{nil, nil, nil, nil}
 	copy(values, workload)
 	objectType := tftypes.Object{AttributeTypes: map[string]tftypes.Type{
 		"address":           tftypes.String,
 		"auth_method":       tftypes.String,
 		"token_env":         tftypes.String,
 		"ca_cert_file":      tftypes.String,
+		"approle_namespace": tftypes.String,
 		"workload_role_ref": tftypes.String, "workload_assertion_env": tftypes.String, "workload_assertion_file": tftypes.String,
 	}}
 	return tfsdk.Config{
@@ -347,9 +521,17 @@ func configFor(s providerschema.Schema, address, authMethod, tokenEnv, caCertFil
 			"workload_role_ref":       tftypes.NewValue(tftypes.String, values[0]),
 			"workload_assertion_env":  tftypes.NewValue(tftypes.String, values[1]),
 			"workload_assertion_file": tftypes.NewValue(tftypes.String, values[2]),
+			"approle_namespace":       tftypes.NewValue(tftypes.String, values[3]),
 		}),
 		Schema: s,
 	}
+}
+
+func optionalString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func hasDiagnosticSummary(diagnostics diag.Diagnostics, want string) bool {
