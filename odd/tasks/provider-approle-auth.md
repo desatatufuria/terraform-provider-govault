@@ -3,7 +3,7 @@
 ## Status
 
 - Feature: implementation complete
-- Current task: none; implementation and native review complete
+- Current task: none; implementation, native review, and live validation complete
 - Branch: `tfp-g-provider-approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -186,8 +186,40 @@ token into Terraform configuration, plans, or state.
       and whitespace-insensitive documentation guards. Native authority marked
       them informational; they are not part of this feature's authorized scope.
 
+- [x] **PGA-004 — Validate AppRole against the development lab**
+  - Route: delegated direct mapping with parent-owned remote execution.
+  - Trigger evidence: the test crossed the provider repository, deployed
+    backend contract, remote Compose runtime, Terraform 1.10/1.11, and cleanup.
+  - Acceptance:
+    - A bounded AppRole authenticates against the real development API.
+    - Terraform 1.10 and 1.11 complete plan, show, apply, and state inspection.
+    - RoleID, SecretID, issued tokens, and secret values remain absent from all
+      Terraform artifacts and logs.
+    - Temporary credentials, AppRole, secret, and namespace are removed.
+  - Evidence:
+    - The previous API `v4.4.0-rc.19` was incompatible because it issued
+      non-expiring AppRole tokens. Backend branch commit
+      `3900201dcd82636f246e16dbd6382017c5d2d772` was pushed and deployed as an
+      API-only lab build `v4.4.0-rc.20`; health was OK and the UI container ID,
+      image, and start time were unchanged.
+    - Terraform 1.10.5 and 1.11.4 each completed `plan`, `show -json`, `apply`,
+      and `state pull` against the verified HTTPS endpoint using only
+      `GOVAULT_ROLE_ID` and `GOVAULT_SECRET_ID` for AppRole credentials.
+    - Audit evidence recorded exactly four AppRole logins and four namespaced
+      secret reads, matching separate plan/apply configuration in both versions.
+    - Recursive binary-safe scans found no RoleID, SecretID, secret value, or
+      GoVault bearer token in plan, state, command output, diagnostics, or
+      `TF_LOG=TRACE` artifacts.
+    - Cascade cleanup removed namespace `tf-live-20260922-073745`; local and
+      remote credential/test files were deleted, and the API remained healthy.
+    - Registry publication was not completed: the registry rejected the remote
+      push with HTTP 401. The immutable API image remains local to the lab host;
+      this does not affect the completed runtime proof but must be resolved
+      before treating the RC as distributable.
+
 ## Progress and next step
 
-`PGA-001` through `PGA-003` are implemented, locally verified, and the final
-implementation candidate has passed native RDD. The next step is the
-user-directed delivery decision; no remote operation is authorized.
+`PGA-001` through `PGA-004` are complete. The provider implementation passed
+native RDD and the real AppRole flow passed on Terraform 1.10.5 and 1.11.4.
+The next step is the user-directed delivery decision. The provider branch has
+not been pushed, merged, or submitted as a pull request.
