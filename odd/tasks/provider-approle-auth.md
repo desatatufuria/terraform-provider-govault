@@ -3,7 +3,7 @@
 ## Status
 
 - Feature: implementation complete
-- Current task: `PGA-003` complete
+- Current task: none; implementation and native review complete
 - Branch: `tfp-g-provider-approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -178,10 +178,16 @@ token into Terraform configuration, plans, or state.
     - Rollback: revert only `acceptance_test.go`, `repository_test.go`,
       `README.md`, `examples/provider/provider.tf`, and generated
       `docs/index.md` AppRole additions.
-    - Work-unit commit: pending commit identity.
+    - Work-unit commit: `ab81d9f64493c18b3cc112ca7613a5db0ee6d332`.
+    - Native RDD: approved and acknowledged under lineage
+      `review-2c0f1583c7707623` for the exact committed candidate.
+    - Advisory follow-up: the approved review recorded non-blocking warnings
+      about stronger AppRole request negative controls, shell-history guidance,
+      and whitespace-insensitive documentation guards. Native authority marked
+      them informational; they are not part of this feature's authorized scope.
 
 ## Progress and next step
 
-`PGA-001` through `PGA-003` are implemented and locally verified. The next step
-is the user-directed review or delivery decision; no remote operation is
-authorized.
+`PGA-001` through `PGA-003` are implemented, locally verified, and the final
+implementation candidate has passed native RDD. The next step is the
+user-directed delivery decision; no remote operation is authorized.
