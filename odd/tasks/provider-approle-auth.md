@@ -2,8 +2,8 @@
 
 ## Status
 
-- Feature: implementation complete
-- Current task: publish the approved single pull request
+- Feature: implementation complete and submitted for review
+- Current task: none; pull request checks passed
 - Branch: `feat/approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
@@ -11,8 +11,8 @@
 - Size policy: the user explicitly accepted `size:exception` for the cohesive
   single PR; each work unit remains independently reviewable.
 - Approved issue: `#3` — `[Change]: add native AppRole authentication`
-- Remote delivery: authorized on 2026-09-22 for publishing this branch and
-  opening one pull request against `main`
+- Remote delivery: pull request `#4` opened against `main` on 2026-09-22
+  (`https://github.com/desatatufuria/terraform-provider-govault/pull/4`)
 
 ## Objective
 
@@ -223,5 +223,8 @@ token into Terraform configuration, plans, or state.
 
 `PGA-001` through `PGA-004` are complete. The provider implementation passed
 native RDD and the real AppRole flow passed on Terraform 1.10.5 and 1.11.4.
-Issue `#3` is approved. Remote delivery of `feat/approle-auth` as one pull
-request against `main` is authorized and in progress; merge remains pending.
+Issue `#3` is approved. Branch `feat/approle-auth` is published in pull request
+`#4` against `main` with exactly `type:feature` and `size:exception`. Remote CI
+passed `Go checks`, `Terraform 1.10.5 acceptance`, and
+`Terraform 1.11.4 acceptance`. The pull request is ready for review; merge
+remains pending and requires a separate user decision.
