@@ -3,14 +3,16 @@
 ## Status
 
 - Feature: implementation complete
-- Current task: none; implementation, native review, and live validation complete
-- Branch: `tfp-g-provider-approle-auth`
+- Current task: publish the approved single pull request
+- Branch: `feat/approle-auth`
 - Base: local `main` at `9ac3fff3018b194f44ad1a980bb6854d960143a4`
 - Delivery strategy: `single-pr` (existing user preference)
 - Forecast: 540–840 authored lines across three work units
-- Size policy: the existing single-PR choice is retained; each work unit remains
-  independently reviewable and below the per-unit planning heuristic.
-- Remote delivery: not authorized
+- Size policy: the user explicitly accepted `size:exception` for the cohesive
+  single PR; each work unit remains independently reviewable.
+- Approved issue: `#3` — `[Change]: add native AppRole authentication`
+- Remote delivery: authorized on 2026-09-22 for publishing this branch and
+  opening one pull request against `main`
 
 ## Objective
 
@@ -221,5 +223,5 @@ token into Terraform configuration, plans, or state.
 
 `PGA-001` through `PGA-004` are complete. The provider implementation passed
 native RDD and the real AppRole flow passed on Terraform 1.10.5 and 1.11.4.
-The next step is the user-directed delivery decision. The provider branch has
-not been pushed, merged, or submitted as a pull request.
+Issue `#3` is approved. Remote delivery of `feat/approle-auth` as one pull
+request against `main` is authorized and in progress; merge remains pending.
