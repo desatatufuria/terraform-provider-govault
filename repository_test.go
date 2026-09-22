@@ -78,3 +78,25 @@ func TestRepositoryDocumentsFrozenIdentityAndFloor(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryDocumentsEnvironmentOnlyAppRole(t *testing.T) {
+	t.Parallel()
+
+	for _, file := range []string{"README.md", "examples/provider/provider.tf", "docs/index.md"} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		content := string(data)
+		for _, required := range []string{`auth_method`, `approle`} {
+			if !strings.Contains(content, required) {
+				t.Errorf("%s does not document AppRole %q", file, required)
+			}
+		}
+		for _, forbidden := range []string{`role_id =`, `secret_id =`, `GOVAULT_ROLE_ID =`, `GOVAULT_SECRET_ID =`} {
+			if strings.Contains(strings.ToLower(content), strings.ToLower(forbidden)) {
+				t.Errorf("%s implies AppRole credentials belong in HCL: %q", file, forbidden)
+			}
+		}
+	}
+}

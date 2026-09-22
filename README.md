@@ -1,6 +1,6 @@
 # Terraform Provider for GoVault
 
-This repository contains the standalone Terraform provider for GoVault. It supports product-neutral workload authentication, explicit token bootstrap, verified TLS configuration, and ephemeral secret reads.
+This repository contains the standalone Terraform provider for GoVault. It supports AppRole, product-neutral workload authentication, explicit token bootstrap, verified TLS configuration, and ephemeral secret reads.
 
 ## Requirements
 
@@ -8,6 +8,48 @@ This repository contains the standalone Terraform provider for GoVault. It suppo
 - Go 1.25.8 or newer for provider development
 
 The provider serves Terraform plugin protocol 6 at `registry.terraform.io/desatatufuria/govault`. The Terraform 1.10 product floor is intentionally stricter than protocol compatibility because GoVault secret reads will use Terraform ephemeral resources.
+
+## AppRole authentication
+
+Use AppRole for unattended runners that have a durable GoVault role but no
+external identity provider. Supply both credentials through the process
+environment before Terraform starts:
+
+```shell
+export GOVAULT_ROLE_ID="..."
+export GOVAULT_SECRET_ID="..."
+terraform plan
+```
+
+```hcl
+terraform {
+  required_version = ">= 1.10.0"
+
+  required_providers {
+    govault = {
+      source = "desatatufuria/govault"
+    }
+  }
+}
+
+provider "govault" {
+  address      = "https://govault.example.com"
+  auth_method  = "approle"
+  ca_cert_file = "/etc/govault/ca.pem"
+}
+```
+
+Do not put RoleID or SecretID values in HCL. They are intentionally absent
+from the provider schema and are read only from `GOVAULT_ROLE_ID` and
+`GOVAULT_SECRET_ID`. For an AppRole outside the root namespace, add the
+non-secret locator `approle_namespace = "team-a"`.
+
+The AppRole is the durable machine identity. Each provider configuration
+performs exactly one login and keeps the returned short-lived token only in
+memory. The provider does **not** retry a failed or ambiguous AppRole login:
+a limited-use SecretID may already have been consumed. Start a new Terraform
+operation with a still-valid SecretID, or issue a replacement, instead of
+expecting an automatic replay.
 
 ## Workload authentication
 
@@ -87,8 +129,9 @@ Provider configuration requires HTTPS, performs normal certificate and hostname
 verification, and may add the PEM certificates selected by `ca_cert_file` to
 the system trust roots. Requests use a 30-second timeout and honor Terraform
 cancellation. Token authentication obtains its namespace from
-`GET /auth/whoami`; workload authentication obtains it from the login response.
-In both modes, the namespace is server-authoritative and is not user-selectable.
+`GET /auth/whoami`; workload and AppRole authentication obtain it from their
+login responses. In AppRole mode, `approle_namespace` locates the role but the
+response remains authoritative for the session namespace.
 
 Authentication diagnostics contain stable error classes and HTTP status codes only. GoVault response bodies and token values are not copied into diagnostics.
 

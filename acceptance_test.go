@@ -32,6 +32,9 @@ const (
 	acceptanceIntermediate    = "gv-acceptance-workload-intermediate-canary"
 	acceptanceTerminalSession = "gv-acceptance-workload-terminal-session-canary"
 	acceptanceRawBodyCanary   = "gv-acceptance-raw-http-body-canary"
+	acceptanceRoleIDCanary    = "gv-acceptance-approle-role-id-canary"
+	acceptanceSecretIDCanary  = "gv-acceptance-approle-secret-id-canary"
+	acceptanceAppRoleSession  = "gv-acceptance-approle-session-canary"
 	acceptanceCaptureLimit    = 64 * 1024
 	acceptanceCaptureOmitted  = "\n...[output omitted]...\n"
 	acceptanceUnknownCommand  = "external command"
@@ -61,7 +64,146 @@ func TestTerraformEphemeralAcceptance(t *testing.T) {
 			}
 			runTerraformCanary(t, binary, version, providerDir)
 			runTerraformWorkloadCanaries(t, binary, version, providerDir)
+			runTerraformAppRoleCanaries(t, binary, version, providerDir)
 		})
+	}
+}
+
+func runTerraformAppRoleCanaries(t *testing.T, binary, version, providerDir string) {
+	t.Helper()
+	for _, scenario := range []struct {
+		name, namespace, sessionNamespace, loginPath, secretPath string
+	}{
+		{name: "root", sessionNamespace: "root", loginPath: "/auth/login", secretPath: "/ns/root/secrets/item"},
+		{name: "namespaced", namespace: "team-a", sessionNamespace: "team-a", loginPath: "/ns/team-a/auth/login", secretPath: "/ns/team-a/secrets/item"},
+	} {
+		t.Run("approle-"+scenario.name, func(t *testing.T) {
+			var mu sync.Mutex
+			logins, reads := 0, 0
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch r.URL.Path {
+				case scenario.loginPath:
+					body, err := io.ReadAll(r.Body)
+					var request struct {
+						Method      string `json:"method"`
+						Credentials struct {
+							RoleID   string `json:"role_id"`
+							SecretID string `json:"secret_id"`
+						} `json:"credentials"`
+					}
+					if err != nil || r.Method != http.MethodPost || r.URL.RawQuery != "" ||
+						r.Header.Get("Content-Type") != "application/json" ||
+						json.Unmarshal(body, &request) != nil || request.Method != "approle" ||
+						request.Credentials.RoleID != acceptanceRoleIDCanary ||
+						request.Credentials.SecretID != acceptanceSecretIDCanary {
+						t.Error("AppRole login did not contain the expected environment credentials")
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					logins++
+					now := time.Now()
+					fmt.Fprintf(w, `{"token":%q,"access_token":%q,"namespace":%q,"created_at":%d,"expires_at":%d,"detail":%q}`,
+						acceptanceAppRoleSession, acceptanceAppRoleSession, scenario.sessionNamespace,
+						now.Unix(), now.Add(10*time.Minute).Unix(), acceptanceRawBodyCanary)
+				case scenario.secretPath:
+					if r.Header.Get("Authorization") != "Bearer "+acceptanceAppRoleSession {
+						t.Error("AppRole secret read did not use the issued session")
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					reads++
+					if r.URL.Query().Get("name") == "server-failure" {
+						w.WriteHeader(http.StatusInternalServerError)
+						fmt.Fprintf(w, `{"detail":%q}`, acceptanceRawBodyCanary+" "+acceptanceRoleIDCanary+" "+acceptanceSecretIDCanary+" "+acceptanceAppRoleSession)
+						return
+					}
+					if r.URL.Query().Get("name") != "app/key" {
+						t.Error("unexpected AppRole secret query")
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					fmt.Fprintf(w, `{"value":%q,"version":1}`, acceptanceSecretCanary)
+				default:
+					t.Error("unexpected AppRole acceptance request")
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			dir := t.TempDir()
+			ca := filepath.Join(dir, "ca.pem")
+			if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+				t.Fatal("write AppRole acceptance CA")
+			}
+			config := `terraform {
+  required_version = "~> ` + version + `.0"
+  required_providers { govault = { source = "desatatufuria/govault" } }
+}
+provider "govault" {
+  address           = "` + server.URL + `"
+  auth_method       = "approle"
+  ca_cert_file      = "` + ca + `"` + appRoleNamespaceConfig(scenario.namespace) + `
+}
+ephemeral "govault_secret" "canary" { path = "app/key" }
+`
+			if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cli := filepath.Join(dir, "terraform.rc")
+			if err := os.WriteFile(cli, []byte(`provider_installation { dev_overrides { "registry.terraform.io/desatatufuria/govault" = "`+providerDir+`" } }`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := replaceEnv(os.Environ(), "GOVAULT_ROLE_ID="+acceptanceRoleIDCanary, "GOVAULT_SECRET_ID="+acceptanceSecretIDCanary,
+				"TF_CLI_CONFIG_FILE="+cli, "TF_DATA_DIR="+filepath.Join(dir, ".terraform"), "TF_LOG=TRACE", "TF_LOG_PATH="+filepath.Join(dir, "terraform.log"))
+			planOutput := runAcceptanceCommand(t, dir, env, binary, "plan", "-out=tfplan", "-input=false")
+			assertAppRoleCounts(t, &mu, &logins, &reads, 1)
+			showOutput := runAcceptanceCommand(t, dir, env, binary, "show", "-json", "tfplan")
+			assertAppRoleCounts(t, &mu, &logins, &reads, 1)
+			applyOutput := runAcceptanceCommand(t, dir, env, binary, "apply", "-input=false", "-auto-approve", "tfplan")
+			assertAppRoleCounts(t, &mu, &logins, &reads, 2)
+			stateOutput := runAcceptanceCommand(t, dir, env, binary, "state", "pull")
+			assertAppRoleCounts(t, &mu, &logins, &reads, 2)
+			surfaces := []string{planOutput.stdout, planOutput.stderr, showOutput.stdout, showOutput.stderr,
+				applyOutput.stdout, applyOutput.stderr, stateOutput.stdout, stateOutput.stderr}
+			if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(strings.Replace(config, `path = "app/key"`, `path = "server-failure"`, 1)), 0o600); err != nil {
+				t.Fatal("write AppRole failure configuration")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			failureOutput, failureErr, _ := executeAcceptanceCommand(ctx, dir, env, binary, "plan", "-input=false")
+			cancel()
+			if failureOutput.protectedCanary {
+				t.Fatal("AppRole failure emitted a protected canary")
+			}
+			if failureErr == nil || !strings.Contains(failureOutput.stdout+failureOutput.stderr, "Unable to read GoVault secret") {
+				t.Fatal("expected sanitized AppRole secret-read failure")
+			}
+			assertAppRoleCounts(t, &mu, &logins, &reads, 3)
+			surfaces = append(surfaces, failureOutput.stdout, failureOutput.stderr)
+			artifacts, err := collectAcceptanceSurfaces(dir, "README.md", "docs", "examples")
+			if err != nil {
+				t.Fatal("collect AppRole acceptance scan surfaces")
+			}
+			assertNoAcceptanceCanaries(t, version, append(surfaces, artifacts...))
+			logAcceptanceHash(t, version+" AppRole "+scenario.name+" TF_LOG", filepath.Join(dir, "terraform.log"))
+		})
+	}
+}
+
+func appRoleNamespaceConfig(namespace string) string {
+	if namespace == "" {
+		return ""
+	}
+	return "\n  approle_namespace = \"" + namespace + "\""
+}
+
+func assertAppRoleCounts(t *testing.T, mu *sync.Mutex, logins, reads *int, want int) {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+	if *logins != want || *reads != want {
+		t.Fatalf("AppRole requests = logins %d, reads %d; want %d each", *logins, *reads, want)
 	}
 }
 
@@ -542,6 +684,7 @@ func acceptanceProtectedCanaries() []string {
 		acceptanceTokenCanary, acceptanceSecretCanary, acceptanceAssertionCanary,
 		acceptanceForbiddenToken, acceptanceSessionOne, acceptanceSessionTwo,
 		acceptanceIntermediate, acceptanceTerminalSession, acceptanceRawBodyCanary,
+		acceptanceRoleIDCanary, acceptanceSecretIDCanary, acceptanceAppRoleSession,
 	}
 }
 
