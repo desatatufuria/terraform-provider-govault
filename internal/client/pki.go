@@ -1,0 +1,214 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+)
+
+const (
+	maxPKIBody = 1 << 20
+	pemPrivate = "PRIVATE KEY"
+)
+
+var (
+	pkiNamespacePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	pkiIssuerPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+)
+
+// SignRequest is the body of the PKI sign route. Only a certificate request
+// (public key plus names) leaves the process; the private key never does.
+type SignRequest struct {
+	CSRPEM     string `json:"csr_pem"`
+	CommonName string `json:"common_name,omitempty"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+}
+
+// SignedCertificate is the public answer of the PKI sign route.
+type SignedCertificate struct {
+	ID             string `json:"id"`
+	CertificatePEM string `json:"certificate_pem"`
+	IssuingCAPEM   string `json:"issuing_ca_pem"`
+	CAChainPEM     string `json:"ca_chain_pem"`
+	SerialNumber   string `json:"serial_number"`
+	NotAfter       int64  `json:"not_after"`
+	IssuerCAID     string `json:"issuer_ca_id"`
+	IssuerSerial   string `json:"issuer_serial"`
+}
+
+// SignCSR asks GoVault to sign a certificate request under a PKI role.
+//
+// It performs exactly one HTTP request and NEVER retries, not on a transport
+// error, a timeout or any status: every accepted call issues and records a new
+// certificate, so a blind replay would issue a second one. Redirects are not
+// followed. An empty namespace selects the namespace of the session. Failures
+// carry only the HTTP status class, never the answer body.
+func (c *Client) SignCSR(ctx context.Context, namespace, role string, request SignRequest) (SignedCertificate, error) {
+	c.mu.RLock()
+	token, sessionNamespace := c.token, c.namespace
+	c.mu.RUnlock()
+	if namespace == "" {
+		namespace = sessionNamespace
+	}
+	role = strings.TrimSpace(role)
+	if token == "" || !pkiNamespacePattern.MatchString(namespace) || role == "" || strings.TrimSpace(request.CSRPEM) == "" ||
+		request.TTLSeconds < 0 || strings.Contains(request.CSRPEM, pemPrivate) {
+		return SignedCertificate{}, ErrInvalidConfiguration
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return SignedCertificate{}, ErrRequestFailed
+	}
+	requestURL := c.baseURL + "/ns/" + url.PathEscape(namespace) + "/pki/sign/" + url.PathEscape(role)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
+	if err != nil {
+		return SignedCertificate{}, ErrRequestFailed
+	}
+	// Without GetBody the transport can never replay the request on its own.
+	httpRequest.GetBody = nil
+	httpRequest.Header.Set("Authorization", "Bearer "+token)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return SignedCertificate{}, sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+	if err := pkiStatusError(response.StatusCode, http.StatusCreated); err != nil {
+		return SignedCertificate{}, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxPKIBody+1))
+	if err != nil || len(raw) > maxPKIBody {
+		return SignedCertificate{}, ErrInvalidResponse
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var signed SignedCertificate
+	if err := decoder.Decode(&signed); err != nil || signed.CertificatePEM == "" || signed.SerialNumber == "" || signed.NotAfter <= 0 {
+		return SignedCertificate{}, ErrInvalidResponse
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return SignedCertificate{}, ErrInvalidResponse
+	}
+	// The sign route never knows a private key; refuse an answer that carries one.
+	var echoed struct {
+		PrivateKeyPEM json.RawMessage `json:"private_key_pem"`
+	}
+	if err := json.Unmarshal(raw, &echoed); err != nil || echoed.PrivateKeyPEM != nil {
+		return SignedCertificate{}, ErrInvalidResponse
+	}
+	return signed, nil
+}
+
+// PublicCABundle reads the public CA bundle (intermediate and root, PEM) of a
+// namespace. The route is unauthenticated: no credential is sent. An empty
+// namespace selects the namespace of the session, if there is one.
+func (c *Client) PublicCABundle(ctx context.Context, namespace string) (string, error) {
+	namespace, err := c.publicNamespace(namespace)
+	if err != nil {
+		return "", err
+	}
+	raw, err := c.publicGet(ctx, "/pki/public/"+url.PathEscape(namespace)+"/ca-bundle.pem", "application/x-pem-file")
+	if err != nil {
+		return "", err
+	}
+	if !onlyCertificates(raw) {
+		return "", ErrInvalidResponse
+	}
+	return string(raw), nil
+}
+
+// PublicIssuerCertificate reads the public certificate of one intermediate CA
+// (DER on the wire) and returns it PEM encoded.
+func (c *Client) PublicIssuerCertificate(ctx context.Context, namespace, issuer string) (string, error) {
+	namespace, err := c.publicNamespace(namespace)
+	if err != nil {
+		return "", err
+	}
+	if !pkiIssuerPattern.MatchString(issuer) {
+		return "", ErrInvalidConfiguration
+	}
+	raw, err := c.publicGet(ctx, "/pki/public/"+url.PathEscape(namespace)+"/"+url.PathEscape(issuer)+"/ca.der", "application/pkix-cert")
+	if err != nil {
+		return "", err
+	}
+	if len(raw) == 0 || bytes.Contains(raw, []byte("-----BEGIN")) {
+		return "", ErrInvalidResponse
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: raw})), nil
+}
+
+func (c *Client) publicNamespace(namespace string) (string, error) {
+	if namespace == "" {
+		namespace = c.Namespace()
+	}
+	if !pkiNamespacePattern.MatchString(namespace) {
+		return "", ErrInvalidConfiguration
+	}
+	return namespace, nil
+}
+
+// publicGet performs one credential-free GET and returns the bounded body.
+func (c *Client) publicGet(ctx context.Context, path, accept string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, ErrRequestFailed
+	}
+	request.Header.Set("Accept", accept)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, sanitizedRequestError(err)
+	}
+	defer response.Body.Close()
+	if err := pkiStatusError(response.StatusCode, http.StatusOK); err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxPKIBody+1))
+	if err != nil || len(raw) > maxPKIBody {
+		return nil, ErrInvalidResponse
+	}
+	return raw, nil
+}
+
+// pkiStatusError maps a status to a stable error that never repeats the body.
+func pkiStatusError(status, success int) error {
+	switch status {
+	case success:
+		return nil
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusForbidden:
+		return ErrForbidden
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict:
+		return fmt.Errorf("%w: HTTP %d", ErrInvalidRequest, status)
+	case http.StatusTooManyRequests:
+		return ErrRateLimited
+	case http.StatusServiceUnavailable:
+		return ErrServiceUnavailable
+	}
+	return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, status)
+}
+
+// onlyCertificates reports whether data is one or more CERTIFICATE PEM blocks
+// and nothing else.
+func onlyCertificates(data []byte) bool {
+	count := 0
+	for {
+		block, rest := pem.Decode(data)
+		if block == nil {
+			return count > 0 && len(bytes.TrimSpace(data)) == 0
+		}
+		if block.Type != "CERTIFICATE" {
+			return false
+		}
+		count++
+		data = rest
+	}
+}
