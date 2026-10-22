@@ -139,6 +139,10 @@ func (p *goVaultProvider) Configure(ctx context.Context, req provider.ConfigureR
 	}
 
 	resp.EphemeralResourceData = configuredClient
+	// Data sources land in state, so they only get the public, credential-free reader.
+	if reader, ok := configuredClient.(bundleReader); ok {
+		resp.DataSourceData = publicBundleClient{reader}
+	}
 }
 
 func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) secretReader {
@@ -239,7 +243,7 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 }
 
 func (p *goVaultProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{newPKIBundleDataSource}
 }
 
 func (p *goVaultProvider) Resources(context.Context) []func() resource.Resource {
@@ -272,4 +276,16 @@ func validateKnownConfiguration(config providerModel) diag.Diagnostics {
 		}
 	}
 	return diagnostics
+}
+
+// publicBundleClient narrows the configured client to the unauthenticated public
+// PKI reads, so a data source can never reach secrets or sign certificates.
+type publicBundleClient struct{ reader bundleReader }
+
+func (c publicBundleClient) PublicCABundle(ctx context.Context, namespace string) (string, error) {
+	return c.reader.PublicCABundle(ctx, namespace)
+}
+
+func (c publicBundleClient) PublicIssuerCertificate(ctx context.Context, namespace, issuer string) (string, error) {
+	return c.reader.PublicIssuerCertificate(ctx, namespace, issuer)
 }
