@@ -146,6 +146,30 @@ ephemeral "govault_secret" "example" {
 
 `value` and `resolved_version` are computed, sensitive, ephemeral results. The resource has no namespace, role, or policy selector, and the provider exposes no secret-bearing data source or managed resource.
 
+## PKI certificates
+
+```hcl
+ephemeral "govault_pki_certificate" "api" {
+  namespace   = "team-a"
+  role        = "web"
+  common_name = "api.example.test"
+  alt_names   = ["api.example.test"]
+  ttl         = "24h"
+}
+
+data "govault_pki_bundle" "team_a" {
+  namespace = "team-a"
+}
+```
+
+`govault_pki_certificate` generates the private key inside the provider process (`key_type`: `ecdsa-p256` default, `ecdsa-p384`, `rsa-2048`, `rsa-4096`), builds a certificate request and sends only that request to `POST /ns/{namespace}/pki/sign/{role}`. GoVault never sees the key, and the provider refuses a certificate that does not match the generated key. Set `self = true` for a self-issue profile role (no names are sent; combining it with any name is a plan-time error).
+
+Every open issues a new certificate and the sign call is never retried, so a failed or timed-out call may still have issued one (revoke it by `id` if needed). There is no renewal: ephemeral results cannot change after they are opened, so re-run Terraform to get a new certificate.
+
+**The private key is sensitive and must only be passed to write-only or ephemeral-capable destinations** (a write-only attribute such as `data_wo` of a Kubernetes secret, or another ephemeral consumer). Any ordinary resource attribute would store it in Terraform state. See `examples/ephemeral-resources/govault_pki_certificate`.
+
+`govault_pki_bundle` is a data source for public data only: the CA certificates of a namespace (or of one intermediate with `issuer`), read from the unauthenticated `/pki/public/...` routes. It needs no policy and receives no credentials.
+
 Terraform acceptance uses explicitly supplied local binaries only: set `TF_ACC_TERRAFORM_1_10` and `TF_ACC_TERRAFORM_1_11`. Tests skip missing binaries and never download Terraform.
 
 ## Development

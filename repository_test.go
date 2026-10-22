@@ -103,3 +103,26 @@ func TestRepositoryDocumentsEnvironmentOnlyAppRole(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryDocumentsPKIKeyHandling(t *testing.T) {
+	t.Parallel()
+
+	for _, file := range []string{
+		"README.md", "docs/ephemeral-resources/pki_certificate.md", "docs/data-sources/pki_bundle.md",
+		"examples/ephemeral-resources/govault_pki_certificate/ephemeral-resource.tf", "examples/data-sources/govault_pki_bundle/data-source.tf",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(data), "BEGIN") {
+			t.Errorf("%s must not contain PEM material", file)
+		}
+	}
+	for _, file := range []string{"README.md", "examples/ephemeral-resources/govault_pki_certificate/ephemeral-resource.tf"} {
+		data, _ := os.ReadFile(file)
+		if !strings.Contains(string(data), "write-only") {
+			t.Errorf("%s must warn that the private key only goes to write-only destinations", file)
+		}
+	}
+}

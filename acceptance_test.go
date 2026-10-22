@@ -3,11 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,6 +71,7 @@ func TestTerraformEphemeralAcceptance(t *testing.T) {
 			runTerraformCanary(t, binary, version, providerDir)
 			runTerraformWorkloadCanaries(t, binary, version, providerDir)
 			runTerraformAppRoleCanaries(t, binary, version, providerDir)
+			runTerraformPKIAcceptance(t, binary, version, providerDir)
 		})
 	}
 }
@@ -850,4 +857,131 @@ func TestAcceptanceCaptureDetectsEveryCanaryAcrossWrites(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runTerraformPKIAcceptance drives govault_pki_certificate and govault_pki_bundle
+// against a fake GoVault: the key is local, only a CSR is sent, and no surface
+// Terraform writes may contain a private key.
+func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string) {
+	t.Helper()
+	const token = acceptanceTokenCanary
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "acceptance root"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, caKey.Public(), caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, _ := x509.ParseCertificate(caDER)
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
+	var mu sync.Mutex
+	var signs int
+	var leaked bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/pki/public/team-a/ca-bundle.pem":
+			if r.Header.Get("Authorization") != "" {
+				t.Error("public bundle request carried credentials")
+			}
+			_, _ = w.Write([]byte(caPEM))
+			return
+		case "/auth/whoami":
+			_, _ = w.Write([]byte(`{"namespace":"team-a"}`))
+			return
+		case "/ns/team-a/pki/sign/web":
+		default:
+			t.Errorf("unexpected PKI acceptance path")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		signs++
+		leaked = leaked || strings.Contains(string(body), "PRIVATE KEY")
+		mu.Unlock()
+		var request struct {
+			CSR string `json:"csr_pem"`
+		}
+		_ = json.Unmarshal(body, &request)
+		block, _ := pem.Decode([]byte(request.CSR))
+		if block == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: csr.Subject, DNSNames: csr.DNSNames, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
+		der, err := x509.CreateCertificate(rand.Reader, leaf, caCert, csr.PublicKey, caKey)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		answer, _ := json.Marshal(map[string]any{
+			"id": "gv.pki.cert.acceptance", "certificate_pem": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+			"issuing_ca_pem": caPEM, "ca_chain_pem": caPEM, "serial_number": "2", "not_after": leaf.NotAfter.Unix(),
+		})
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(answer)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal("write acceptance CA")
+	}
+	config := `terraform {
+  required_version = "~> ` + version + `.0"
+  required_providers {
+    govault = {
+      source = "desatatufuria/govault"
+    }
+  }
+}
+provider "govault" {
+  address      = "` + server.URL + `"
+  auth_method  = "token"
+  ca_cert_file = "` + ca + `"
+}
+ephemeral "govault_pki_certificate" "api" {
+  role        = "web"
+  common_name = "api.example.test"
+}
+data "govault_pki_bundle" "team" {
+  namespace = "team-a"
+}
+output "bundle" {
+  value = data.govault_pki_bundle.team.pem
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "terraform.rc")
+	if err := os.WriteFile(cli, []byte(`provider_installation { dev_overrides { "registry.terraform.io/desatatufuria/govault" = "`+providerDir+`" } }`), 0o600); err != nil {
+		t.Fatal("write Terraform CLI configuration")
+	}
+	env := replaceEnv(os.Environ(), "GOVAULT_TOKEN="+token, "TF_CLI_CONFIG_FILE="+cli, "TF_DATA_DIR="+filepath.Join(dir, ".terraform"))
+	planOutput := runAcceptanceCommand(t, dir, env, binary, "plan", "-out=tfplan", "-input=false")
+	showOutput := runAcceptanceCommand(t, dir, env, binary, "show", "-json", "tfplan")
+	applyOutput := runAcceptanceCommand(t, dir, env, binary, "apply", "-input=false", "-auto-approve", "tfplan")
+	stateOutput := runAcceptanceCommand(t, dir, env, binary, "state", "pull")
+	if !strings.Contains(stateOutput.stdout, "BEGIN CERTIFICATE") {
+		t.Error("the public CA bundle should be readable in state")
+	}
+	for _, surface := range []string{planOutput.stdout, planOutput.stderr, showOutput.stdout, showOutput.stderr, applyOutput.stdout, applyOutput.stderr, stateOutput.stdout, stateOutput.stderr} {
+		if strings.Contains(surface, "PRIVATE KEY") {
+			t.Fatal("a Terraform surface contains private key material")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if leaked {
+		t.Fatal("a sign request carried a private key block")
+	}
+	t.Logf("Terraform %s PKI acceptance: %d sign call(s) to the fake server", version, signs)
 }

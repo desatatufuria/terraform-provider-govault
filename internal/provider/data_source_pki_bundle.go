@@ -34,7 +34,7 @@ func (d *pkiBundleDataSource) Schema(_ context.Context, _ datasource.SchemaReque
 		Attributes: map[string]schema.Attribute{
 			"namespace": schema.StringAttribute{Optional: true, Description: "GoVault namespace; defaults to the namespace of the authenticated session."},
 			"issuer":    schema.StringAttribute{Optional: true, Description: "Id of one intermediate CA (gv.pki.ca.<id>); omit for the namespace bundle (active intermediate and root)."},
-			"id":        schema.StringAttribute{Computed: true, Description: "The namespace, or namespace/issuer."},
+			"id":        schema.StringAttribute{Computed: true, Description: "The namespace (session when it is defaulted), followed by /issuer when an issuer is given."},
 			"pem":       schema.StringAttribute{Computed: true, Description: "CA certificate(s), PEM."},
 		},
 	}
