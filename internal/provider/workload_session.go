@@ -12,6 +12,22 @@ type secretReader interface {
 	ReadSecret(context.Context, string, int64) (govaultclient.Secret, error)
 }
 
+type certificateSigner interface {
+	SignCSR(context.Context, string, string, govaultclient.SignRequest) (govaultclient.SignedCertificate, error)
+}
+
+type bundleReader interface {
+	PublicCABundle(context.Context, string) (string, error)
+	PublicIssuerCertificate(context.Context, string, string) (string, error)
+}
+
+var (
+	_ certificateSigner = (*govaultclient.Client)(nil)
+	_ certificateSigner = (*workloadSession)(nil)
+	_ bundleReader      = (*govaultclient.Client)(nil)
+	_ bundleReader      = (*workloadSession)(nil)
+)
+
 type assertionSourceError struct{ error }
 
 type sessionFlight struct {
@@ -45,6 +61,22 @@ func (s *workloadSession) ReadSecret(ctx context.Context, path string, version i
 		return govaultclient.Secret{}, err
 	}
 	return s.client.ReadSecret(ctx, path, version)
+}
+
+func (s *workloadSession) SignCSR(ctx context.Context, namespace, role string, request govaultclient.SignRequest) (govaultclient.SignedCertificate, error) {
+	if err := s.authenticate(ctx); err != nil {
+		return govaultclient.SignedCertificate{}, err
+	}
+	return s.client.SignCSR(ctx, namespace, role, request)
+}
+
+// The public PKI routes need no credential, so no session is established.
+func (s *workloadSession) PublicCABundle(ctx context.Context, namespace string) (string, error) {
+	return s.client.PublicCABundle(ctx, namespace)
+}
+
+func (s *workloadSession) PublicIssuerCertificate(ctx context.Context, namespace, issuer string) (string, error) {
+	return s.client.PublicIssuerCertificate(ctx, namespace, issuer)
 }
 
 func (s *workloadSession) authenticate(ctx context.Context) error {

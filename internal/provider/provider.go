@@ -247,7 +247,7 @@ func (p *goVaultProvider) Resources(context.Context) []func() resource.Resource 
 }
 
 func (p *goVaultProvider) EphemeralResources(context.Context) []func() ephemeral.EphemeralResource {
-	return []func() ephemeral.EphemeralResource{newSecretEphemeralResource}
+	return []func() ephemeral.EphemeralResource{newSecretEphemeralResource, newPKICertificateEphemeralResource}
 }
 
 func validateKnownConfiguration(config providerModel) diag.Diagnostics {

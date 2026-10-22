@@ -32,7 +32,7 @@ func TestProtocol6ProviderSchema(t *testing.T) {
 	if len(response.ResourceSchemas) != 0 || len(response.DataSourceSchemas) != 0 {
 		t.Fatal("provider must not register state-bearing resources")
 	}
-	if len(response.EphemeralResourceSchemas) != 1 || response.EphemeralResourceSchemas["govault_secret"] == nil {
+	if len(response.EphemeralResourceSchemas) != 2 || response.EphemeralResourceSchemas["govault_secret"] == nil || response.EphemeralResourceSchemas["govault_pki_certificate"] == nil {
 		t.Fatalf("unexpected ephemeral schemas: %#v", response.EphemeralResourceSchemas)
 	}
 }
