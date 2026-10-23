@@ -185,3 +185,58 @@ func TestWorkloadSessionSignsAfterAuthenticating(t *testing.T) {
 		t.Fatalf("diagnostics=%v logins=%d signs=%d", response.Diagnostics, logins.Load(), fake.calls())
 	}
 }
+
+func TestWorkloadSessionBundleWithoutNamespaceAuthenticatesOnce(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeGoVaultPKI(t)
+	var logins atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/workload/login":
+			logins.Add(1)
+			_, _ = w.Write([]byte(`{"token":"session","access_token":"session","namespace":"team-a","expires_at":4102444800}`))
+		case "/pki/public/team-a/ca-bundle.pem":
+			if r.Header.Get("Authorization") != "" {
+				t.Errorf("public route got a credential")
+			}
+			_, _ = w.Write([]byte(fake.caPEM))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "assertion", nil })
+
+	// The data source reads first: nothing opened an ephemeral resource before.
+	reader := publicBundleClient{session}
+	response, model := readBundle(t, reader, nil, nil)
+	if response.Diagnostics.HasError() || model.PEM.ValueString() != fake.caPEM || model.ID.ValueString() != "session" {
+		t.Fatalf("diagnostics=%v model=%+v", response.Diagnostics, model)
+	}
+	if again, _ := readBundle(t, reader, nil, nil); again.Diagnostics.HasError() {
+		t.Fatalf("second read: %v", again.Diagnostics)
+	}
+	if logins.Load() != 1 {
+		t.Fatalf("logins = %d, want exactly 1", logins.Load())
+	}
+}
+
+func TestWorkloadSessionBundleWithNamespaceNeedsNoLogin(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeGoVaultPKI(t)
+	var logins atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/workload/login" {
+			logins.Add(1)
+		}
+		_, _ = w.Write([]byte(fake.caPEM))
+	}))
+	defer server.Close()
+	session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "assertion", nil })
+	if response, _ := readBundle(t, publicBundleClient{session}, "team-b", nil); response.Diagnostics.HasError() || logins.Load() != 0 {
+		t.Fatalf("diagnostics=%v logins=%d", response.Diagnostics, logins.Load())
+	}
+}

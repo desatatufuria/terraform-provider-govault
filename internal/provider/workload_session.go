@@ -70,13 +70,28 @@ func (s *workloadSession) SignCSR(ctx context.Context, namespace, role string, r
 	return s.client.SignCSR(ctx, namespace, role, request)
 }
 
-// The public PKI routes need no credential, so no session is established.
+// The public PKI routes need no credential. Only an omitted namespace needs the
+// session, because it defaults to the namespace the login returned; an explicit
+// namespace never logs in.
 func (s *workloadSession) PublicCABundle(ctx context.Context, namespace string) (string, error) {
+	if err := s.authenticateForNamespace(ctx, namespace); err != nil {
+		return "", err
+	}
 	return s.client.PublicCABundle(ctx, namespace)
 }
 
 func (s *workloadSession) PublicIssuerCertificate(ctx context.Context, namespace, issuer string) (string, error) {
+	if err := s.authenticateForNamespace(ctx, namespace); err != nil {
+		return "", err
+	}
 	return s.client.PublicIssuerCertificate(ctx, namespace, issuer)
+}
+
+func (s *workloadSession) authenticateForNamespace(ctx context.Context, namespace string) error {
+	if namespace != "" {
+		return nil
+	}
+	return s.authenticate(ctx)
 }
 
 func (s *workloadSession) authenticate(ctx context.Context) error {
