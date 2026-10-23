@@ -232,7 +232,7 @@ func refusalMessage(body io.Reader) string {
 		return ""
 	}
 	text = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
