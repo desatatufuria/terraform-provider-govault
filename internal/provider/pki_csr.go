@@ -105,6 +105,11 @@ func buildCSR(names certificateNames, key crypto.Signer) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})), nil
 }
 
+// maxTTLDays is the longest lifetime the GoVault server signs.
+const maxTTLDays = 397
+
+var errTTLTooLong = errors.New("ttl must not exceed 397 days, the longest lifetime GoVault signs")
+
 // parseTTLSeconds reads a lifetime such as 90m, 24h or 7d into whole seconds.
 // An empty text is 0: the default of the role.
 func parseTTLSeconds(text string) (int64, error) {
@@ -114,9 +119,15 @@ func parseTTLSeconds(text string) (int64, error) {
 	}
 	var duration time.Duration
 	if days, ok := strings.CutSuffix(text, "d"); ok {
-		n, err := strconv.ParseInt(days, 10, 32)
+		n, err := strconv.ParseInt(days, 10, 64)
+		if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(days, "-") {
+			return 0, errTTLTooLong
+		}
 		if err != nil {
 			return 0, errors.New("ttl must be a lifetime such as 90m, 24h or 7d")
+		}
+		if n > maxTTLDays {
+			return 0, errTTLTooLong
 		}
 		duration = time.Duration(n) * 24 * time.Hour
 	} else {
@@ -125,6 +136,9 @@ func parseTTLSeconds(text string) (int64, error) {
 			return 0, errors.New("ttl must be a lifetime such as 90m, 24h or 7d")
 		}
 		duration = parsed
+	}
+	if duration > maxTTLDays*24*time.Hour {
+		return 0, errTTLTooLong
 	}
 	if duration <= 0 || duration%time.Second != 0 {
 		return 0, errors.New("ttl must be a positive whole number of seconds")

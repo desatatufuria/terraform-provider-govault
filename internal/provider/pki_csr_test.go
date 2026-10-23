@@ -132,6 +132,22 @@ func TestParseTTLSeconds(t *testing.T) {
 	}
 }
 
+func TestParseTTLSecondsBoundsTheLifetimeToTheServerCeiling(t *testing.T) {
+	t.Parallel()
+
+	for text, want := range map[string]int64{"397d": 397 * 86400, "9528h": 397 * 86400, "1d": 86400} {
+		if got, err := parseTTLSeconds(text); err != nil || got != want {
+			t.Errorf("%q = %d, %v; want %d", text, got, err, want)
+		}
+	}
+	for _, text := range []string{"398d", "106751d", "106752d", "200000d", "99999999999d", "9529h", "2147483647d"} {
+		_, err := parseTTLSeconds(text)
+		if err == nil || !strings.Contains(err.Error(), "397 days") {
+			t.Errorf("%q must fail naming the 397 day limit, got %v", text, err)
+		}
+	}
+}
+
 func signedFor(t *testing.T, public any, notBefore, notAfter time.Time) string {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
