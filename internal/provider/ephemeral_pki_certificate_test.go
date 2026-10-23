@@ -500,3 +500,72 @@ func TestPKICertificateCloseKeepsTheClient(t *testing.T) {
 		t.Fatal("close cleared the shared client")
 	}
 }
+
+// TestPKICertificateEphemeralLifecycleKeepsTheKeyLocal drives the resource the way
+// Terraform does (Configure with provider data, Open, Close) against the fake
+// server, so the end-to-end key handling is proved without a Terraform binary.
+func TestPKICertificateEphemeralLifecycleKeepsTheKeyLocal(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeGoVaultPKI(t)
+	client, _ := fake.client(t)
+	resource := newPKICertificateEphemeralResource()
+	var configured ephemeral.ConfigureResponse
+	resource.(ephemeral.EphemeralResourceWithConfigure).Configure(context.Background(), ephemeral.ConfigureRequest{ProviderData: client}, &configured)
+	if configured.Diagnostics.HasError() {
+		t.Fatalf("configure: %v", configured.Diagnostics)
+	}
+
+	open := func() pkiCertificateModel {
+		raw := pkiConfig(nil)
+		resourceSchema := pkiSchema()
+		response := ephemeral.OpenResponse{Result: tfsdk.EphemeralResultData{Raw: raw, Schema: resourceSchema}}
+		resource.Open(context.Background(), ephemeral.OpenRequest{Config: tfsdk.Config{Raw: raw, Schema: resourceSchema}}, &response)
+		if response.Diagnostics.HasError() {
+			t.Fatalf("open: %v", response.Diagnostics)
+		}
+		var model pkiCertificateModel
+		if diagnostics := response.Result.Get(context.Background(), &model); diagnostics.HasError() {
+			t.Fatalf("result: %v", diagnostics)
+		}
+		resource.(ephemeral.EphemeralResourceWithClose).Close(context.Background(), ephemeral.CloseRequest{}, &ephemeral.CloseResponse{})
+		return model
+	}
+
+	first := open()
+	if fake.calls() != 1 {
+		t.Fatalf("sign calls after one open = %d, want 1", fake.calls())
+	}
+	second := open()
+	if fake.calls() != 2 {
+		t.Fatalf("sign calls after two opens = %d, want 2", fake.calls())
+	}
+	if first.PrivateKey.ValueString() == second.PrivateKey.ValueString() {
+		t.Fatal("two opens must generate two distinct keys")
+	}
+	if !pkiSchema().Attributes["private_key"].IsSensitive() {
+		t.Fatal("private_key must be sensitive")
+	}
+	for _, model := range []pkiCertificateModel{first, second} {
+		keyBlock, _ := pem.Decode([]byte(model.PrivateKey.ValueString()))
+		if keyBlock == nil || keyBlock.Type != "PRIVATE KEY" {
+			t.Fatal("private_key is not PKCS#8 PEM")
+		}
+		key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		certBlock, _ := pem.Decode([]byte(model.Certificate.ValueString()))
+		cert, err := x509.ParseCertificate(certBlock.Bytes)
+		if err != nil || !key.(*ecdsa.PrivateKey).Public().(*ecdsa.PublicKey).Equal(cert.PublicKey) {
+			t.Fatalf("certificate does not match its key: %v", err)
+		}
+		// No private key, in PEM or as its base64 body, was ever sent to GoVault.
+		body := strings.Join(strings.Fields(strings.ReplaceAll(strings.ReplaceAll(model.PrivateKey.ValueString(), "-----BEGIN PRIVATE KEY-----", ""), "-----END PRIVATE KEY-----", "")), "")
+		for _, sent := range fake.bodies {
+			if strings.Contains(sent, "PRIVATE KEY") || strings.Contains(sent, body) {
+				t.Fatal("a sign request carried private key material")
+			}
+		}
+	}
+}

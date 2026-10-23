@@ -162,7 +162,7 @@ data "govault_pki_bundle" "team_a" {
 }
 ```
 
-`govault_pki_certificate` generates the private key inside the provider process (`key_type`: `ecdsa-p256` default, `ecdsa-p384`, `rsa-2048`, `rsa-4096`), builds a certificate request and sends only that request to `POST /ns/{namespace}/pki/sign/{role}`. GoVault never sees the key, and the provider refuses a certificate that does not match the generated key. Set `self = true` for a self-issue profile role (no names are sent; combining it with any name is a plan-time error).
+`govault_pki_certificate` generates the private key inside the provider process (`key_type`: `ecdsa-p256` default, `ecdsa-p384`, `rsa-2048`, `rsa-4096`), builds a certificate request and sends only that request to `POST /ns/{namespace}/pki/sign/{role}`. GoVault never sees the key, and the provider refuses a certificate that does not match the generated key. Set `self = true` for a self-issue profile role (no names are sent; combining it with any name is a plan-time error). When GoVault refuses a request with 400, 409 or 422, the error shows its fixed refusal message after sanitising (control characters removed, 200 bytes at most, dropped if it looks like PEM); a sign call is never retried.
 
 Every open issues a new certificate and the sign call is never retried, so a failed or timed-out call may still have issued one (revoke it by `id` if needed). There is no renewal: ephemeral results cannot change after they are opened, so re-run Terraform to get a new certificate.
 

@@ -877,7 +877,7 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 	caCert, _ := x509.ParseCertificate(caDER)
 	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
 	var mu sync.Mutex
-	var signs int
+	var signs, consumerReads int
 	var leaked bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -889,6 +889,16 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 			return
 		case "/auth/whoami":
 			_, _ = w.Write([]byte(`{"namespace":"team-a"}`))
+			return
+		case "/ns/team-a/secrets/item":
+			// Only an ephemeral resource that consumes the certificate serial reads this.
+			if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Query().Get("name") != "2" {
+				t.Error("consumer secret read had the wrong credential or name")
+			}
+			mu.Lock()
+			consumerReads++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"value":"consumed","version":1}`))
 			return
 		case "/ns/team-a/pki/sign/web":
 		default:
@@ -951,6 +961,12 @@ ephemeral "govault_pki_certificate" "api" {
   role        = "web"
   common_name = "api.example.test"
 }
+# Terraform opens an ephemeral resource only when something consumes it. This
+# one reads a secret named after the certificate serial, so the certificate
+# (and its local key) is really opened on every plan and apply.
+ephemeral "govault_secret" "consumer" {
+  path = ephemeral.govault_pki_certificate.api.serial
+}
 data "govault_pki_bundle" "team" {
   namespace = "team-a"
 }
@@ -966,15 +982,29 @@ output "bundle" {
 		t.Fatal("write Terraform CLI configuration")
 	}
 	env := replaceEnv(os.Environ(), "GOVAULT_TOKEN="+token, "TF_CLI_CONFIG_FILE="+cli, "TF_DATA_DIR="+filepath.Join(dir, ".terraform"))
+	// Each open of the ephemeral certificate issues exactly one new certificate:
+	// one on plan, one more on apply, none on show or state pull.
+	assertPKICounts := func(stage string, want int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if signs != want || consumerReads != want {
+			t.Fatalf("after %s: sign calls = %d, consumer reads = %d; want %d each", stage, signs, consumerReads, want)
+		}
+	}
 	planOutput := runAcceptanceCommand(t, dir, env, binary, "plan", "-out=tfplan", "-input=false")
+	assertPKICounts("plan", 1)
 	showOutput := runAcceptanceCommand(t, dir, env, binary, "show", "-json", "tfplan")
+	assertPKICounts("show", 1)
 	applyOutput := runAcceptanceCommand(t, dir, env, binary, "apply", "-input=false", "-auto-approve", "tfplan")
+	assertPKICounts("apply", 2)
 	stateOutput := runAcceptanceCommand(t, dir, env, binary, "state", "pull")
+	assertPKICounts("state pull", 2)
 	if !strings.Contains(stateOutput.stdout, "BEGIN CERTIFICATE") {
 		t.Error("the public CA bundle should be readable in state")
 	}
 	for _, surface := range []string{planOutput.stdout, planOutput.stderr, showOutput.stdout, showOutput.stderr, applyOutput.stdout, applyOutput.stderr, stateOutput.stdout, stateOutput.stderr} {
-		if strings.Contains(surface, "PRIVATE KEY") {
+		if strings.Contains(surface, "PRIVATE KEY") || strings.Contains(surface, "BEGIN EC") || strings.Contains(surface, "BEGIN RSA") {
 			t.Fatal("a Terraform surface contains private key material")
 		}
 	}
