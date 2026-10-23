@@ -135,6 +135,13 @@ or state, and read the public CA bundle of a namespace.
   passed; only `TestTerraformEphemeralAcceptance` skipped. Offline
   `go generate ./...` ran and changed no docs beyond the ttl description.
 
+- Follow-up F265/F266/F267 (commits 65d0375, 55fd70e): refusal messages also
+  lose `unicode.Cf` characters before the PEM check; the acceptance fake issues
+  a distinct serial per sign call and asserts each consumer read names the
+  serial issued by its open; the lifecycle test checks the PEM block and the key
+  type. `go build`, `go vet`, `gofmt -l`, `go test ./... -count=1` passed;
+  `TestTerraformEphemeralAcceptance` still skipped.
+
 ## Unverified
 
 - Real GoVault and real Terraform runs; the Kubernetes `data_wo` example was
@@ -150,3 +157,4 @@ or state, and read the public CA bundle of a namespace.
 - (Done in PKC-005, D-C.) Sanitised surfacing of the server refusal text.
 - Ephemeral renewal if Terraform ever allows a changed result.
 - (Done in PKC-006, F207.) A consumer in the acceptance case.
+- (Done, F265/F266/F267.) Serial per sign call, format-character stripping, checked assertions.
