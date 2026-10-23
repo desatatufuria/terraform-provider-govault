@@ -877,7 +877,8 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 	caCert, _ := x509.ParseCertificate(caDER)
 	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
 	var mu sync.Mutex
-	var signs, consumerReads int
+	var signs int
+	var issued, consumed []string // serials issued by sign calls and secret names read, each in order
 	var leaked bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -892,11 +893,11 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 			return
 		case "/ns/team-a/secrets/item":
 			// Only an ephemeral resource that consumes the certificate serial reads this.
-			if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Query().Get("name") != "2" {
-				t.Error("consumer secret read had the wrong credential or name")
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Error("consumer secret read had the wrong credential")
 			}
 			mu.Lock()
-			consumerReads++
+			consumed = append(consumed, r.URL.Query().Get("name"))
 			mu.Unlock()
 			_, _ = w.Write([]byte(`{"value":"consumed","version":1}`))
 			return
@@ -909,6 +910,8 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		signs++
+		serial := int64(signs + 1) // a distinct serial per sign call, in order
+		issued = append(issued, strconv.FormatInt(serial, 10))
 		leaked = leaked || strings.Contains(string(body), "PRIVATE KEY")
 		mu.Unlock()
 		var request struct {
@@ -925,7 +928,7 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: csr.Subject, DNSNames: csr.DNSNames, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
+		leaf := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: csr.Subject, DNSNames: csr.DNSNames, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour)}
 		der, err := x509.CreateCertificate(rand.Reader, leaf, caCert, csr.PublicKey, caKey)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -933,7 +936,7 @@ func runTerraformPKIAcceptance(t *testing.T, binary, version, providerDir string
 		}
 		answer, _ := json.Marshal(map[string]any{
 			"id": "gv.pki.cert.acceptance", "certificate_pem": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
-			"issuing_ca_pem": caPEM, "ca_chain_pem": caPEM, "serial_number": "2", "not_after": leaf.NotAfter.Unix(),
+			"issuing_ca_pem": caPEM, "ca_chain_pem": caPEM, "serial_number": strconv.FormatInt(serial, 10), "not_after": leaf.NotAfter.Unix(),
 		})
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write(answer)
@@ -988,8 +991,15 @@ output "bundle" {
 		t.Helper()
 		mu.Lock()
 		defer mu.Unlock()
-		if signs != want || consumerReads != want {
-			t.Fatalf("after %s: sign calls = %d, consumer reads = %d; want %d each", stage, signs, consumerReads, want)
+		if signs != want || len(consumed) != want {
+			t.Fatalf("after %s: sign calls = %d, consumer reads = %d; want %d each", stage, signs, len(consumed), want)
+		}
+		// Every consumer read names the serial of the certificate issued by the
+		// open that fed it: the i-th read follows the i-th sign call.
+		for i := range consumed {
+			if consumed[i] != issued[i] {
+				t.Fatalf("after %s: consumer read %d named %q, want the issued serial %q", stage, i+1, consumed[i], issued[i])
+			}
 		}
 	}
 	planOutput := runAcceptanceCommand(t, dir, env, binary, "plan", "-out=tfplan", "-input=false")

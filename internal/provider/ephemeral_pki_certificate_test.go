@@ -556,8 +556,15 @@ func TestPKICertificateEphemeralLifecycleKeepsTheKeyLocal(t *testing.T) {
 			t.Fatal(err)
 		}
 		certBlock, _ := pem.Decode([]byte(model.Certificate.ValueString()))
+		if certBlock == nil {
+			t.Fatal("certificate is not PEM")
+		}
+		ecKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			t.Fatalf("private_key is a %T, want an ECDSA key", key)
+		}
 		cert, err := x509.ParseCertificate(certBlock.Bytes)
-		if err != nil || !key.(*ecdsa.PrivateKey).Public().(*ecdsa.PublicKey).Equal(cert.PublicKey) {
+		if err != nil || !ecKey.Public().(*ecdsa.PublicKey).Equal(cert.PublicKey) {
 			t.Fatalf("certificate does not match its key: %v", err)
 		}
 		// No private key, in PEM or as its base64 body, was ever sent to GoVault.
