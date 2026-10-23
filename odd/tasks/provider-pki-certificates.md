@@ -97,6 +97,31 @@ or state, and read the public CA bundle of a namespace.
     write-only warning; Kubernetes `data_wo` example; fake-server acceptance
     case `runTerraformPKIAcceptance` (skips without the pinned binaries).
   - Work-unit commit: `669b392`.
+- [x] **PKC-005 — Follow-up unit: F208, F206, D-C (owner decision)**
+  - F208 `6815335`, `b9444b7`: `parseTTLSeconds` bounded to 397 days (days and
+    total duration; the error names the limit); RED: `398d`, `106751d`,
+    `9529h` accepted, `200000d`/`99999999999d` failed with unrelated messages;
+    GREEN with `398d`, `106751d`, `106752d`, `200000d`, `99999999999d`,
+    `2147483647d`, `9529h` refused and `397d`, `9528h`, `1d` accepted.
+  - F206 `45e9b74`: workload session public reads log in only when the
+    namespace is omitted (one login shared by repeated reads, none with an
+    explicit namespace); the data source still receives only the narrowed
+    public reader. RED: read failed with `invalid GoVault client configuration`.
+  - D-C `cead7bd`: for 400, 409 and 422 the client keeps the server `error`
+    text (control characters stripped, 200 bytes at most, dropped if it holds
+    `-----BEGIN` in any case or split by control characters), as
+    `HTTP <status>: <message>`; 422 now maps to the invalid-request class;
+    sign is still never retried and other statuses never repeat the body. RED
+    shown with the old client (messages absent, 422 unexpected status).
+- [x] **PKC-006 — F207 acceptance consumer and direct lifecycle test** `f03750e`
+  - The acceptance case adds `ephemeral "govault_secret" "consumer"` whose path
+    is the certificate serial, so Terraform must open the certificate; it
+    asserts 1 sign and 1 consumer read after plan, still 1 after show, 2 after
+    apply, 2 after state pull, and scans every surface for PRIVATE KEY /
+    BEGIN EC / BEGIN RSA. Skips without the pinned binaries; nothing was run.
+  - New Go test `TestPKICertificateEphemeralLifecycleKeepsTheKeyLocal` drives
+    Configure/Open/Close with the real client against the fake server: one sign
+    per open, distinct keys, key sensitive, matches the certificate, never sent.
 
 ## Verification
 
@@ -106,15 +131,22 @@ or state, and read the public CA bundle of a namespace.
 - Skipped: `TestTerraformEphemeralAcceptance` (no `TF_ACC_TERRAFORM_1_10` /
   `_1_11` binaries here), so the new Terraform-level case did not run.
 
+- Follow-up unit: `go build`, `go vet`, `gofmt -l`, `go test ./... -count=1`
+  passed; only `TestTerraformEphemeralAcceptance` skipped. Offline
+  `go generate ./...` ran and changed no docs beyond the ttl description.
+
 ## Unverified
 
 - Real GoVault and real Terraform runs; the Kubernetes `data_wo` example was
   not applied and depends on the kubernetes provider version in use.
-- The acceptance case may not open the ephemeral resource if nothing consumes
-  it; it checks leak invariants, not the sign count.
+- The acceptance case now consumes the ephemeral certificate (see PKC-006) and
+  asserts sign counts, but it has still never run: no Terraform binaries here
+  and none were downloaded (not authorised). Whether Terraform evaluates the
+  consumer exactly once per plan and once per apply is therefore unproved.
+- Not scanned: TF_LOG output of the PKI acceptance case (no TRACE log there).
 
 ## Follow-ups
 
-- Optional sanitised surfacing of the server refusal text (400/409 are opaque).
+- (Done in PKC-005, D-C.) Sanitised surfacing of the server refusal text.
 - Ephemeral renewal if Terraform ever allows a changed result.
-- A consumer in the acceptance case that forces the ephemeral open.
+- (Done in PKC-006, F207.) A consumer in the acceptance case.
