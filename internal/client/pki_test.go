@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -313,5 +314,83 @@ func TestPublicIssuerCertificateConvertsDERToPEM(t *testing.T) {
 	}
 	if _, err := authenticatedTestClient(t, server).PublicIssuerCertificate(context.Background(), "team-a", "../x"); !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("bad issuer: %v", err)
+	}
+}
+
+func refusalServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestSignCSRShowsTheRefusalMessageForTheThreeRefusalStatuses(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{400, 409, 422} {
+		server := refusalServer(t, status, `{"error":"common name not allowed by the role"}`)
+		_, err := authenticatedTestClient(t, server).SignCSR(context.Background(), "team-a", "web", SignRequest{CSRPEM: "csr"})
+		want := fmt.Sprintf("HTTP %d: common name not allowed by the role", status)
+		if !errors.Is(err, ErrInvalidRequest) || err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("status %d: error = %v, want %q", status, err, want)
+		}
+	}
+}
+
+func TestPublicReadShowsTheRefusalMessageToo(t *testing.T) {
+	t.Parallel()
+
+	server := refusalServer(t, 409, `{"error":"no active issuer"}`)
+	_, err := authenticatedTestClient(t, server).PublicCABundle(context.Background(), "team-a")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 409: no active issuer") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRefusalMessageIsSanitised(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("é", 150) // 300 bytes
+	cases := map[string]struct {
+		body string
+		want string // exact error suffix after the status class; "" means no message
+	}{
+		"control characters":   {`{"error":"bad\u0000 name\r\n\u001b[31mred\u007f"}`, "bad name[31mred"},
+		"capped at 200 bytes":  {`{"error":"` + long + `"}`, strings.Repeat("é", 100)},
+		"pem is dropped":       {`{"error":"refused -----BEGIN PRIVATE KEY----- abc"}`, ""},
+		"split pem is dropped": {`{"error":"-----BE\u0000GIN PRIVATE KEY-----"}`, ""},
+		"lower case pem":       {`{"error":"-----begin certificate-----"}`, ""},
+		"not json":             {`oops`, ""},
+		"no error field":       {`{"detail":"x"}`, ""},
+		"empty error":          {`{"error":"  "}`, ""},
+	}
+	for name, tc := range cases {
+		server := refusalServer(t, 400, tc.body)
+		_, err := authenticatedTestClient(t, server).SignCSR(context.Background(), "team-a", "web", SignRequest{CSRPEM: "csr"})
+		want := "GoVault rejected the request: HTTP 400"
+		if tc.want != "" {
+			want += ": " + tc.want
+		}
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: error = %q, want %q", name, err, want)
+		}
+		if err != nil && (strings.Contains(err.Error(), "BEGIN") || len(err.Error()) > len(want)) {
+			t.Errorf("%s: unsafe error %q", name, err)
+		}
+	}
+}
+
+func TestOtherStatusesNeverRepeatTheBody(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{401, 403, 404, 429, 500, 503} {
+		server := refusalServer(t, status, `{"error":"secret-detail"}`)
+		_, err := authenticatedTestClient(t, server).SignCSR(context.Background(), "team-a", "web", SignRequest{CSRPEM: "csr"})
+		if err == nil || strings.Contains(err.Error(), "secret-detail") {
+			t.Errorf("status %d: error = %v", status, err)
+		}
 	}
 }

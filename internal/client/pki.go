@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -50,7 +52,8 @@ type SignedCertificate struct {
 // error, a timeout or any status: every accepted call issues and records a new
 // certificate, so a blind replay would issue a second one. Redirects are not
 // followed. An empty namespace selects the namespace of the session. Failures
-// carry only the HTTP status class, never the answer body.
+// carry the HTTP status class and, for 400, 409 and 422, the sanitised refusal
+// message; never any other part of the answer body.
 func (c *Client) SignCSR(ctx context.Context, namespace, role string, request SignRequest) (SignedCertificate, error) {
 	c.mu.RLock()
 	token, sessionNamespace := c.token, c.namespace
@@ -82,7 +85,7 @@ func (c *Client) SignCSR(ctx context.Context, namespace, role string, request Si
 		return SignedCertificate{}, sanitizedRequestError(err)
 	}
 	defer response.Body.Close()
-	if err := pkiStatusError(response.StatusCode, http.StatusCreated); err != nil {
+	if err := pkiStatusError(response, http.StatusCreated); err != nil {
 		return SignedCertificate{}, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxPKIBody+1))
@@ -167,7 +170,7 @@ func (c *Client) publicGet(ctx context.Context, path, accept string) ([]byte, er
 		return nil, sanitizedRequestError(err)
 	}
 	defer response.Body.Close()
-	if err := pkiStatusError(response.StatusCode, http.StatusOK); err != nil {
+	if err := pkiStatusError(response, http.StatusOK); err != nil {
 		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxPKIBody+1))
@@ -177,8 +180,17 @@ func (c *Client) publicGet(ctx context.Context, path, accept string) ([]byte, er
 	return raw, nil
 }
 
-// pkiStatusError maps a status to a stable error that never repeats the body.
-func pkiStatusError(status, success int) error {
+// maxRefusalBody bounds how much of a refusal body is read for its message.
+const maxRefusalBody = 4 << 10
+
+// maxRefusalMessage caps the server message shown to the operator.
+const maxRefusalMessage = 200
+
+// pkiStatusError maps a status to a stable error. For 400, 409 and 422 it adds
+// the server's fixed refusal message after sanitising it; no other status and
+// no other body content is ever repeated.
+func pkiStatusError(response *http.Response, success int) error {
+	status := response.StatusCode
 	switch status {
 	case success:
 		return nil
@@ -186,7 +198,12 @@ func pkiStatusError(status, success int) error {
 		return ErrUnauthorized
 	case http.StatusForbidden:
 		return ErrForbidden
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict:
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
+		if message := refusalMessage(response.Body); message != "" {
+			return fmt.Errorf("%w: HTTP %d: %s", ErrInvalidRequest, status, message)
+		}
+		return fmt.Errorf("%w: HTTP %d", ErrInvalidRequest, status)
+	case http.StatusNotFound:
 		return fmt.Errorf("%w: HTTP %d", ErrInvalidRequest, status)
 	case http.StatusTooManyRequests:
 		return ErrRateLimited
@@ -194,6 +211,41 @@ func pkiStatusError(status, success int) error {
 		return ErrServiceUnavailable
 	}
 	return fmt.Errorf("%w: HTTP %d", ErrUnexpectedStatus, status)
+}
+
+// refusalMessage returns the "error" text of a refusal body, or "" when there is
+// none or it is unsafe to show. Control characters are removed, a message that
+// looks like PEM is dropped whole, and the result is capped at 200 bytes.
+func refusalMessage(body io.Reader) string {
+	raw, err := io.ReadAll(io.LimitReader(body, maxRefusalBody))
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	text := payload.Error
+	if strings.Contains(strings.ToUpper(text), "-----BEGIN") || !utf8.ValidString(text) {
+		return ""
+	}
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+	text = strings.TrimSpace(text)
+	if strings.Contains(strings.ToUpper(text), "-----BEGIN") {
+		return ""
+	}
+	for len(text) > maxRefusalMessage {
+		_, size := utf8.DecodeLastRuneInString(text)
+		text = text[:len(text)-size]
+	}
+	return strings.TrimSpace(text)
 }
 
 // onlyCertificates reports whether data is one or more CERTIFICATE PEM blocks
