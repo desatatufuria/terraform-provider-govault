@@ -68,7 +68,7 @@ resource "kubernetes_secret_v1" "api_tls" {
 - `key_type` (String) Key to generate locally: ecdsa-p256 (default), ecdsa-p384, rsa-2048 or rsa-4096.
 - `namespace` (String) GoVault namespace of the PKI role; defaults to the namespace of the authenticated session.
 - `self` (Boolean) Set for a self-issue profile role: no names are sent and GoVault builds the subject from the authenticated identity. Cannot be combined with common_name or any *_sans/alt_names.
-- `ttl` (String) Requested lifetime such as 90m, 24h or 7d; omit for the default of the role.
+- `ttl` (String) Requested lifetime such as 90m, 24h or 7d, at most 397 days; omit for the default of the role.
 - `uri_sans` (List of String) URI subject alternative names.
 
 ### Read-Only

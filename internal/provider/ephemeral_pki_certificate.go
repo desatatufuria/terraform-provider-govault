@@ -76,7 +76,7 @@ func (r *pkiCertificateEphemeralResource) Schema(_ context.Context, _ ephemeral.
 			"ip_sans":            list("IP address subject alternative names."),
 			"uri_sans":           list("URI subject alternative names."),
 			"email_sans":         list("E-mail subject alternative names."),
-			"ttl":                schema.StringAttribute{Optional: true, Description: "Requested lifetime such as 90m, 24h or 7d; omit for the default of the role."},
+			"ttl":                schema.StringAttribute{Optional: true, Description: "Requested lifetime such as 90m, 24h or 7d, at most 397 days; omit for the default of the role."},
 			"key_type":           schema.StringAttribute{Optional: true, Description: "Key to generate locally: ecdsa-p256 (default), ecdsa-p384, rsa-2048 or rsa-4096.", Validators: []validator.String{stringvalidator.OneOf(supportedKeyTypes...)}},
 			"self":               schema.BoolAttribute{Optional: true, Description: "Set for a self-issue profile role: no names are sent and GoVault builds the subject from the authenticated identity. Cannot be combined with common_name or any *_sans/alt_names."},
 			"id":                 schema.StringAttribute{Computed: true, Description: "GoVault certificate record id; use it to revoke the certificate."},
