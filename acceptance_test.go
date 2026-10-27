@@ -63,10 +63,81 @@ func TestTerraformEphemeralAcceptance(t *testing.T) {
 				t.Skip("pinned Terraform " + version + " binary unavailable")
 			}
 			runTerraformCanary(t, binary, version, providerDir)
+			runTerraformParameterCanary(t, binary, version, providerDir)
 			runTerraformWorkloadCanaries(t, binary, version, providerDir)
 			runTerraformAppRoleCanaries(t, binary, version, providerDir)
 		})
 	}
+}
+
+func runTerraformParameterCanary(t *testing.T, binary, version, providerDir string) {
+	t.Helper()
+	const value = "gv-acceptance-parameter-value"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+acceptanceTokenCanary {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.URL.Path == "/auth/whoami":
+			_, _ = w.Write([]byte(`{"namespace":"team-a"}`))
+		case r.URL.Path == "/ns/team-a/parameters/item" && r.URL.Query().Get("name") == "app/log-level":
+			_, _ = w.Write([]byte(`{"name":"app/log-level","value":"` + value + `","version":2,"revision":"gv.prev.a","created":1700000000,"updated":1700000100}`))
+		case r.URL.Path == "/ns/team-a/parameters/summaries" && r.URL.Query().Get("prefix") == "app/":
+			_, _ = w.Write([]byte(`{"parameters":[{"name":"app/log-level","value":"` + value + `","version":2,"revision":"gv.prev.a","created":1700000000,"updated":1700000100}],"total":1}`))
+		case r.URL.Path == "/ns/team-a/parameters/item":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(acceptanceRawBodyCanary))
+		default:
+			t.Errorf("unexpected parameter acceptance request")
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal("write acceptance CA")
+	}
+	config := `terraform {
+  required_version = "~> ` + version + `.0"
+  required_providers { govault = { source = "desatatufuria/govault" } }
+}
+provider "govault" {
+  address      = "` + server.URL + `"
+  auth_method  = "token"
+  ca_cert_file = "` + ca + `"
+}
+data "govault_parameter" "one" { name = "app/log-level" }
+data "govault_parameters" "all" { prefix = "app/" }
+output "one" { value = data.govault_parameter.one.value }
+output "all" { value = data.govault_parameters.all.values["app/log-level"] }
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "terraform.rc")
+	if err := os.WriteFile(cli, []byte(`provider_installation { dev_overrides { "registry.terraform.io/desatatufuria/govault" = "`+providerDir+`" } }`), 0o600); err != nil {
+		t.Fatal("write Terraform CLI configuration")
+	}
+	env := replaceEnv(os.Environ(), "GOVAULT_TOKEN="+acceptanceTokenCanary, "TF_CLI_CONFIG_FILE="+cli, "TF_DATA_DIR="+filepath.Join(dir, ".terraform"))
+	applyOutput := runAcceptanceCommand(t, dir, env, binary, "apply", "-input=false", "-auto-approve")
+	stateOutput := runAcceptanceCommand(t, dir, env, binary, "state", "pull")
+	// A parameter value is non-secret by design: it is expected in state and outputs.
+	if !strings.Contains(stateOutput.stdout, value) || !strings.Contains(applyOutput.stdout, value) {
+		t.Fatal("parameter value must be readable in state and outputs")
+	}
+	missing := strings.Replace(config, `name = "app/log-level"`, `name = "app/missing"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(missing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	failure, failureErr, _ := executeAcceptanceCommand(ctx, dir, env, binary, "plan", "-input=false")
+	cancel()
+	if failureErr == nil || failure.protectedCanary || !strings.Contains(failure.stdout+failure.stderr, "does not exist") {
+		t.Fatal("missing parameter must fail with the not-found diagnostic and no protected canary")
+	}
+	assertNoAcceptanceCanaries(t, version, []string{applyOutput.stdout, applyOutput.stderr, stateOutput.stdout, stateOutput.stderr, failure.stdout, failure.stderr})
 }
 
 func runTerraformAppRoleCanaries(t *testing.T, binary, version, providerDir string) {

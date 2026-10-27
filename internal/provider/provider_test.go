@@ -262,8 +262,8 @@ func TestConfigureAuthenticatesUsingOnlySelectedEnvironment(t *testing.T) {
 			if !ok || configuredClient.Namespace() != "team-a" {
 				t.Fatalf("unexpected ephemeral provider data: %#v", response.EphemeralResourceData)
 			}
-			if response.DataSourceData != nil || response.ResourceData != nil {
-				t.Fatal("PHE-002 must not configure state-bearing provider data")
+			if response.DataSourceData != response.EphemeralResourceData || response.ResourceData != nil {
+				t.Fatal("data sources share the configured client; there is no managed resource data")
 			}
 		})
 	}
@@ -418,8 +418,8 @@ func TestConfigureAppRoleLoginThenReadsSecret(t *testing.T) {
 			if got := strings.Join(paths, ","); got != test.loginPath+",/ns/"+test.sessionNS+"/secrets/item" {
 				t.Fatalf("paths = %s", got)
 			}
-			if response.DataSourceData != nil || response.ResourceData != nil {
-				t.Fatal("AppRole must only configure ephemeral provider data")
+			if response.DataSourceData != response.EphemeralResourceData || response.ResourceData != nil {
+				t.Fatal("data sources share the configured client; there is no managed resource data")
 			}
 		})
 	}

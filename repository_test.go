@@ -29,8 +29,18 @@ func TestProtocol6ProviderSchema(t *testing.T) {
 	if response.Provider == nil {
 		t.Fatal("protocol 6 server returned no provider schema")
 	}
-	if len(response.ResourceSchemas) != 0 || len(response.DataSourceSchemas) != 0 {
-		t.Fatal("provider must not register state-bearing resources")
+	if len(response.ResourceSchemas) != 0 {
+		t.Fatal("provider must not register managed resources")
+	}
+	if len(response.DataSourceSchemas) != 2 || response.DataSourceSchemas["govault_parameter"] == nil || response.DataSourceSchemas["govault_parameters"] == nil {
+		t.Fatalf("unexpected data source schemas: %#v", response.DataSourceSchemas)
+	}
+	for name, source := range response.DataSourceSchemas {
+		for _, attribute := range source.Block.Attributes {
+			if attribute.Sensitive {
+				t.Errorf("%s.%s: parameters are non-secret by design", name, attribute.Name)
+			}
+		}
 	}
 	if len(response.EphemeralResourceSchemas) != 1 || response.EphemeralResourceSchemas["govault_secret"] == nil {
 		t.Fatalf("unexpected ephemeral schemas: %#v", response.EphemeralResourceSchemas)

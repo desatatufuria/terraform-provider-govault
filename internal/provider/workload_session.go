@@ -141,3 +141,17 @@ func (s *workloadSession) commitFlight(flight *sessionFlight, session govaultcli
 	s.generation, s.expiresAt = flight.generation, session.ExpiresAt
 	return nil
 }
+
+func (s *workloadSession) ReadParameter(ctx context.Context, name string, version int64) (govaultclient.Parameter, error) {
+	if err := s.authenticate(ctx); err != nil {
+		return govaultclient.Parameter{}, err
+	}
+	return s.client.ReadParameter(ctx, name, version)
+}
+
+func (s *workloadSession) ListParameters(ctx context.Context, prefix string) ([]govaultclient.Parameter, error) {
+	if err := s.authenticate(ctx); err != nil {
+		return nil, err
+	}
+	return s.client.ListParameters(ctx, prefix)
+}

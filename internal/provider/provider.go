@@ -139,9 +139,10 @@ func (p *goVaultProvider) Configure(ctx context.Context, req provider.ConfigureR
 	}
 
 	resp.EphemeralResourceData = configuredClient
+	resp.DataSourceData = configuredClient
 }
 
-func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) secretReader {
+func (p *goVaultProvider) configureClient(ctx context.Context, config providerModel, lookupEnv func(string) (string, bool), diagnostics *diag.Diagnostics) govaultAPI {
 	method := config.AuthMethod.ValueString()
 	if method != tokenAuth && method != workloadAuth && method != appRoleAuth {
 		diagnostics.AddError("Unsupported authentication method", "The provider auth_method must be \"token\", \"workload\", or \"approle\".")
@@ -239,7 +240,7 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 }
 
 func (p *goVaultProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{newParameterDataSource, newParametersDataSource}
 }
 
 func (p *goVaultProvider) Resources(context.Context) []func() resource.Resource {
