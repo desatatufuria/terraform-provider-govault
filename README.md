@@ -1,13 +1,13 @@
 # Terraform Provider for GoVault
 
-This repository contains the standalone Terraform provider for GoVault. It supports AppRole, product-neutral workload authentication, explicit token bootstrap, verified TLS configuration, and ephemeral secret reads.
+This repository contains the standalone Terraform provider for GoVault. It supports AppRole, product-neutral workload authentication, explicit token bootstrap, verified TLS configuration, ephemeral secret reads, and read-only data sources for non-secret parameters.
 
 ## Requirements
 
 - Terraform 1.10 or newer
 - Go 1.25.8 or newer for provider development
 
-The provider serves Terraform plugin protocol 6 at `registry.terraform.io/desatatufuria/govault`. The Terraform 1.10 product floor is intentionally stricter than protocol compatibility because GoVault secret reads will use Terraform ephemeral resources.
+The provider serves Terraform plugin protocol 6 at `registry.terraform.io/desatatufuria/govault`. The Terraform 1.10 product floor is intentionally stricter than protocol compatibility because GoVault secret reads use Terraform ephemeral resources.
 
 ## AppRole authentication
 
@@ -144,7 +144,37 @@ ephemeral "govault_secret" "example" {
 }
 ```
 
-`value` and `resolved_version` are computed, sensitive, ephemeral results. The resource has no namespace, role, or policy selector, and the provider exposes no secret-bearing data source or managed resource.
+`value` and `resolved_version` are computed, sensitive, ephemeral results. The resource has no namespace, role, or policy selector, and secrets are never exposed through a data source or a managed resource.
+
+## Parameters (data sources)
+
+GoVault parameters are **non-secret configuration** values with versions. Two
+read-only data sources expose them:
+
+```hcl
+data "govault_parameter" "log_level" {
+  name = "app/log-level"
+  # version = 2 # optional; omit for the current version
+}
+
+data "govault_parameters" "app" {
+  prefix = "app/" # optional; omit to read every parameter
+}
+```
+
+`govault_parameter` returns `value`, `version`, `description`, `revision`,
+`created_at`, `updated_at` and `created_by`. `govault_parameters` returns a
+`values` map (name to value) and a `parameters` list with the same details,
+and follows the server paging for you.
+
+**Parameter values are not sensitive.** They appear in plan output and are
+stored in clear in Terraform state. Parameters are for non-secret
+configuration only; use the `govault_secret` ephemeral resource for secrets.
+Managing parameters from Terraform is not offered: there is no
+`govault_parameter` resource. Reads use the namespace of the authenticated
+session; there is no namespace argument. A missing parameter, a denied read, a
+sealed vault and a rate limit each fail with a distinct diagnostic that never
+includes a token or a response body.
 
 Terraform acceptance uses explicitly supplied local binaries only: set `TF_ACC_TERRAFORM_1_10` and `TF_ACC_TERRAFORM_1_11`. Tests skip missing binaries and never download Terraform.
 
