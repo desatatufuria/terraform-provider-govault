@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -224,4 +225,141 @@ func waitForWaiters(t *testing.T, session *workloadSession, want int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("flight did not reach %d waiters", want)
+}
+
+func TestWorkloadSessionParametersUseWorkloadCredentialAndRefreshOnExpiry(t *testing.T) {
+	var logins, reads, lists atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/workload/login":
+			n := logins.Add(1)
+			fmt.Fprintf(w, `{"token":"s%d","access_token":"s%d","namespace":"team-a","expires_at":%d}`, n, n, 4102444800+int64(n)*100)
+		case "/ns/team-a/parameters/item/versions/2":
+			reads.Add(1)
+			if got, want := r.Header.Get("Authorization"), fmt.Sprintf("Bearer s%d", logins.Load()); got != want {
+				t.Errorf("read authorization = %q, want %q", got, want)
+			}
+			if r.URL.Query().Get("name") != "app/level" {
+				t.Errorf("read query = %q", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"name":"app/level","value":"info","version":2}`))
+		case "/ns/team-a/parameters/summaries":
+			lists.Add(1)
+			if got, want := r.Header.Get("Authorization"), fmt.Sprintf("Bearer s%d", logins.Load()); got != want {
+				t.Errorf("list authorization = %q, want %q", got, want)
+			}
+			if r.URL.Query().Get("prefix") != "app/" {
+				t.Errorf("list query = %q", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"parameters":[{"name":"app/level","value":"info","version":2}],"total":1}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "assertion", nil })
+	now := time.Unix(0, 0)
+	session.now = func() time.Time { return now }
+
+	parameter, err := session.ReadParameter(context.Background(), "app/level", 2)
+	if err != nil || parameter.Value != "info" || parameter.Version != 2 {
+		t.Fatalf("parameter = %#v, error = %v", parameter, err)
+	}
+	parameters, err := session.ListParameters(context.Background(), "app/")
+	if err != nil || len(parameters) != 1 || parameters[0].Name != "app/level" {
+		t.Fatalf("parameters = %#v, error = %v", parameters, err)
+	}
+	if logins.Load() != 1 {
+		t.Fatalf("logins before expiry = %d, want 1", logins.Load())
+	}
+
+	// An expired credential is renewed before each new parameter read.
+	now = time.Unix(4102444900, 0)
+	if _, err := session.ReadParameter(context.Background(), "app/level", 2); err != nil {
+		t.Fatalf("read after expiry: %v", err)
+	}
+	now = time.Unix(4102445100, 0)
+	if _, err := session.ListParameters(context.Background(), "app/"); err != nil {
+		t.Fatalf("list after expiry: %v", err)
+	}
+	if logins.Load() != 3 || reads.Load() != 2 || lists.Load() != 2 {
+		t.Fatalf("logins=%d reads=%d lists=%d", logins.Load(), reads.Load(), lists.Load())
+	}
+}
+
+func TestWorkloadSessionParametersMapErrorsToStableClasses(t *testing.T) {
+	tests := map[string]struct {
+		status int
+		want   error
+	}{
+		"unauthorized": {http.StatusUnauthorized, govaultclient.ErrUnauthorized},
+		"forbidden":    {http.StatusForbidden, govaultclient.ErrForbidden},
+		"not found":    {http.StatusNotFound, govaultclient.ErrNotFound},
+		"sealed":       {http.StatusServiceUnavailable, govaultclient.ErrServiceUnavailable},
+		"rate limited": {http.StatusTooManyRequests, govaultclient.ErrRateLimited},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			var logins, requests atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/auth/workload/login" {
+					logins.Add(1)
+					_, _ = w.Write([]byte(`{"token":"s1","access_token":"s1","namespace":"team-a","expires_at":4102444800}`))
+					return
+				}
+				requests.Add(1)
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("parameter-body-canary"))
+			}))
+			defer server.Close()
+			session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "assertion", nil })
+			session.now = func() time.Time { return time.Unix(0, 0) }
+
+			_, readErr := session.ReadParameter(context.Background(), "app/level", 0)
+			_, listErr := session.ListParameters(context.Background(), "")
+			for _, err := range []error{readErr, listErr} {
+				if !errors.Is(err, test.want) {
+					t.Fatalf("error = %v, want %v", err, test.want)
+				}
+				if strings.Contains(err.Error(), "parameter-body-canary") || strings.Contains(err.Error(), "s1") {
+					t.Fatalf("error leaks response or credential: %v", err)
+				}
+			}
+			// A rejected credential is not replayed through a second login.
+			if logins.Load() != 1 || requests.Load() != 2 {
+				t.Fatalf("logins=%d requests=%d", logins.Load(), requests.Load())
+			}
+		})
+	}
+}
+
+func TestWorkloadSessionParametersStopWhenAuthenticationFails(t *testing.T) {
+	var parameterRequests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/workload/login" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"service_unavailable"}`))
+			return
+		}
+		parameterRequests.Add(1)
+	}))
+	defer server.Close()
+	session := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "assertion", nil })
+	if _, err := session.ReadParameter(context.Background(), "app/level", 0); !errors.Is(err, govaultclient.ErrServiceUnavailable) {
+		t.Fatalf("read error = %v", err)
+	}
+	if _, err := session.ListParameters(context.Background(), ""); !errors.Is(err, govaultclient.ErrServiceUnavailable) {
+		t.Fatalf("list error = %v", err)
+	}
+	failing := newWorkloadSession(testWorkloadClient(t, server), "role", func() (string, error) { return "", errors.New("no identity") })
+	var sourceErr assertionSourceError
+	if _, err := failing.ReadParameter(context.Background(), "app/level", 0); !errors.As(err, &sourceErr) {
+		t.Fatalf("assertion source error = %v", err)
+	}
+	if _, err := failing.ListParameters(context.Background(), ""); !errors.As(err, &sourceErr) {
+		t.Fatalf("assertion source list error = %v", err)
+	}
+	if parameterRequests.Load() != 0 {
+		t.Fatalf("parameter requests = %d, want 0", parameterRequests.Load())
+	}
 }
