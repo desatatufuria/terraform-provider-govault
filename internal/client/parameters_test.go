@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,5 +150,131 @@ func TestListParametersFailsClosed(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+// pagedParameterServer serves total synthetic parameters in pages, letting a
+// test override the response of one request index.
+func pagedParameterServer(t *testing.T, total int, override func(request, offset int) (string, bool)) (*httptest.Server, *[]int) {
+	t.Helper()
+	var offsets []int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err != nil {
+			t.Errorf("bad offset in %s", r.URL.String())
+		}
+		request := len(offsets)
+		offsets = append(offsets, offset)
+		if body, ok := override(request, offset); ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		end := offset + 200
+		if end > total {
+			end = total
+		}
+		_, _ = w.Write([]byte(parameterPageBody(offset, end, total)))
+	}))
+	t.Cleanup(server.Close)
+	return server, &offsets
+}
+
+func parameterPageBody(from, to, total int) string {
+	rows := make([]string, 0, to-from)
+	for i := from; i < to; i++ {
+		rows = append(rows, fmt.Sprintf(`{"name":"app/p%04d","value":"v","version":1}`, i))
+	}
+	return fmt.Sprintf(`{"parameters":[%s],"total":%d}`, strings.Join(rows, ","), total)
+}
+
+func listWith(t *testing.T, server *httptest.Server) ([]Parameter, error) {
+	t.Helper()
+	client := newTestClient(t, server, server.URL, "gv.secret-token", time.Second)
+	client.namespace = "team-a"
+	return client.ListParameters(context.Background(), "")
+}
+
+func TestListParametersReadsEveryPageInOrder(t *testing.T) {
+	t.Parallel()
+	server, offsets := pagedParameterServer(t, 450, func(int, int) (string, bool) { return "", false })
+	parameters, err := listWith(t, server)
+	if err != nil || len(parameters) != 450 {
+		t.Fatalf("len = %d, error = %v", len(parameters), err)
+	}
+	for i, parameter := range parameters {
+		if want := fmt.Sprintf("app/p%04d", i); parameter.Name != want {
+			t.Fatalf("parameters[%d] = %s, want %s", i, parameter.Name, want)
+		}
+	}
+	if fmt.Sprint(*offsets) != "[0 200 400]" {
+		t.Fatalf("offsets = %v", *offsets)
+	}
+}
+
+func TestListParametersSinglePageMakesOneRequest(t *testing.T) {
+	t.Parallel()
+	for _, total := range []int{0, 7, 200} {
+		server, offsets := pagedParameterServer(t, total, func(int, int) (string, bool) { return "", false })
+		parameters, err := listWith(t, server)
+		if err != nil || len(parameters) != total || len(*offsets) != 1 {
+			t.Fatalf("total %d: len = %d, requests = %v, error = %v", total, len(parameters), *offsets, err)
+		}
+	}
+}
+
+func TestListParametersRejectsInconsistentPaging(t *testing.T) {
+	t.Parallel()
+	const canary = "paging-body-canary"
+	tests := map[string]struct {
+		total    int
+		override func(request, offset int) (string, bool)
+	}{
+		"empty page before total": {450, func(request, _ int) (string, bool) {
+			return `{"parameters":[],"total":450}`, request == 1
+		}},
+		"total shrinks": {450, func(request, _ int) (string, bool) {
+			return parameterPageBody(200, 400, 300), request == 1
+		}},
+		"total grows": {450, func(request, _ int) (string, bool) {
+			return parameterPageBody(200, 400, 900), request == 1
+		}},
+		"offset does not advance": {450, func(request, _ int) (string, bool) {
+			return parameterPageBody(0, 200, 450), request == 1
+		}},
+		"more rows than total": {450, func(request, _ int) (string, bool) {
+			return parameterPageBody(200, 460, 450), request == 1
+		}},
+		"endless one-row pages": {100000, func(_, offset int) (string, bool) {
+			return parameterPageBody(offset, offset+1, 100000), true
+		}},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			server, offsets := pagedParameterServer(t, test.total, test.override)
+			_, err := listWith(t, server)
+			if !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidResponse)
+			}
+			assertRedacted(t, err, canary)
+			assertRedacted(t, err, "gv.secret-token")
+			assertRedacted(t, err, "app/p")
+			if len(*offsets) > maxParameterPages {
+				t.Fatalf("%d requests exceed the page bound", len(*offsets))
+			}
+		})
+	}
+}
+
+func TestListParametersAcceptsPageLargerThanLimitWithinTotal(t *testing.T) {
+	t.Parallel()
+	// The client trusts the offset it asked for, not the page size: a server
+	// that returns more rows than limit is accepted while rows stay within total.
+	server, offsets := pagedParameterServer(t, 250, func(int, int) (string, bool) {
+		return parameterPageBody(0, 250, 250), true
+	})
+	parameters, err := listWith(t, server)
+	if err != nil || len(parameters) != 250 || len(*offsets) != 1 {
+		t.Fatalf("len = %d, requests = %v, error = %v", len(parameters), *offsets, err)
 	}
 }

@@ -60,6 +60,8 @@ func (c *Client) ReadParameter(ctx context.Context, name string, version int64) 
 // with its value, reading all pages. An empty prefix lists the namespace.
 func (c *Client) ListParameters(ctx context.Context, prefix string) ([]Parameter, error) {
 	var parameters []Parameter
+	seen := map[string]struct{}{}
+	total := -1
 	for page := 0; page < maxParameterPages; page++ {
 		query := url.Values{"limit": []string{strconv.Itoa(parameterPageLimit)}, "offset": []string{strconv.Itoa(len(parameters))}}
 		if prefix != "" {
@@ -76,10 +78,20 @@ func (c *Client) ListParameters(ctx context.Context, prefix string) ([]Parameter
 		if decodeOneJSON(body, &result) != nil || result.Total < 0 {
 			return nil, ErrInvalidResponse
 		}
+		// The total must stay stable and names must be unique across pages;
+		// otherwise the server's paging is inconsistent and the listing is partial.
+		if total >= 0 && result.Total != total {
+			return nil, ErrInvalidResponse
+		}
+		total = result.Total
 		for _, parameter := range result.Parameters {
 			if !validParameter(parameter) {
 				return nil, ErrInvalidResponse
 			}
+			if _, dup := seen[parameter.Name]; dup {
+				return nil, ErrInvalidResponse
+			}
+			seen[parameter.Name] = struct{}{}
 		}
 		parameters = append(parameters, result.Parameters...)
 		if len(parameters) > result.Total || (len(result.Parameters) == 0 && len(parameters) < result.Total) {
