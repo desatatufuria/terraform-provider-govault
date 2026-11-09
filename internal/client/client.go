@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,9 +130,9 @@ func newProtocolClient(config Config) (*Client, error) {
 		if err != nil || roots == nil {
 			roots = x509.NewCertPool()
 		}
-		pemData, err := os.ReadFile(config.CACertFile)
+		pemData, err := readCAFile(config.CACertFile)
 		if err != nil {
-			return nil, fmt.Errorf("%w: unable to read CA certificate file", ErrInvalidConfiguration)
+			return nil, err
 		}
 		if !roots.AppendCertsFromPEM(pemData) {
 			return nil, fmt.Errorf("%w: CA certificate file contains no certificates", ErrInvalidConfiguration)

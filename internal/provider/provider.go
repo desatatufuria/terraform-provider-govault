@@ -112,7 +112,7 @@ func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				Validators: []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"ca_cert_file": schema.StringAttribute{
-				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault.",
+				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault. It must be a regular file of at most 1 MiB and it is added to the system trust roots, not substituted for them.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),

@@ -136,7 +136,10 @@ it.
 
 Provider configuration requires HTTPS, performs normal certificate and hostname
 verification, and may add the PEM certificates selected by `ca_cert_file` to
-the system trust roots. Requests use a 30-second timeout and honor Terraform
+the system trust roots (the file is added to them, not substituted for them).
+The file must be a regular file of at most 1 MiB; a FIFO, a device or a larger
+file is refused before it is read, so a configuration cannot hang the runner.
+Requests use a 30-second timeout and honor Terraform
 cancellation. Token authentication obtains its namespace from
 `GET /auth/whoami`; workload and AppRole authentication obtain it from their
 login responses. In AppRole mode, `approle_namespace` locates the role but the
