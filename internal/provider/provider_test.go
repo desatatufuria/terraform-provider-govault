@@ -158,6 +158,30 @@ func TestConfigureRejectsInvalidSelectorsBeforeIO(t *testing.T) {
 			address: "https://govault.example.com", authMethod: appRoleAuth, selectors: []any{"role", nil, nil},
 			wantError: "Invalid AppRole authentication selectors",
 		},
+		"token environment selector outside the GoVault namespace": {
+			address: "https://govault.example.com", authMethod: "token", tokenEnv: "AWS_SECRET_ACCESS_KEY",
+			wantError: "Invalid token environment selector",
+		},
+		"token environment selector is only the prefix": {
+			address: "https://govault.example.com", authMethod: "token", tokenEnv: "GOVAULT_",
+			wantError: "Invalid token environment selector",
+		},
+		"token environment selector is lower case": {
+			address: "https://govault.example.com", authMethod: "token", tokenEnv: "govault_token",
+			wantError: "Invalid token environment selector",
+		},
+		"token environment selector has a forbidden character": {
+			address: "https://govault.example.com", authMethod: "token", tokenEnv: "GOVAULT_TOKEN=x",
+			wantError: "Invalid token environment selector",
+		},
+		"workload assertion environment selector outside the GoVault namespace": {
+			address: "https://govault.example.com", authMethod: workloadAuth, selectors: []any{"role", "OIDC_TOKEN", nil},
+			wantError: "Invalid workload assertion environment selector",
+		},
+		"workload assertion environment selector is only the prefix": {
+			address: "https://govault.example.com", authMethod: workloadAuth, selectors: []any{"role", "GOVAULT_", nil},
+			wantError: "Invalid workload assertion environment selector",
+		},
 		"AppRole rejects empty namespace": {
 			address: "https://govault.example.com", authMethod: appRoleAuth, selectors: []any{nil, nil, nil, " "},
 			wantError: "Invalid AppRole namespace",
@@ -205,15 +229,15 @@ func TestConfigureAuthenticatesUsingOnlySelectedEnvironment(t *testing.T) {
 			wantRequests: 1,
 		},
 		"explicit selector": {
-			tokenEnv:     "CUSTOM_GOVAULT_TOKEN",
-			lookup:       mapLookup(map[string]string{"CUSTOM_GOVAULT_TOKEN": token}),
-			wantLookup:   "CUSTOM_GOVAULT_TOKEN",
+			tokenEnv:     "GOVAULT_CUSTOM_TOKEN",
+			lookup:       mapLookup(map[string]string{"GOVAULT_CUSTOM_TOKEN": token}),
+			wantLookup:   "GOVAULT_CUSTOM_TOKEN",
 			wantRequests: 1,
 		},
 		"no fallback": {
-			tokenEnv:     "CUSTOM_GOVAULT_TOKEN",
+			tokenEnv:     "GOVAULT_CUSTOM_TOKEN",
 			lookup:       mapLookup(map[string]string{defaultTokenEnv: token}),
-			wantLookup:   "CUSTOM_GOVAULT_TOKEN",
+			wantLookup:   "GOVAULT_CUSTOM_TOKEN",
 			wantError:    "Missing GoVault token",
 			wantRequests: 0,
 		},
@@ -290,9 +314,9 @@ func TestConfigureWorkloadLoginThenReadsSecret(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	p := &goVaultProvider{lookupEnv: mapLookup(map[string]string{"OIDC_ASSERTION": assertion})}
+	p := &goVaultProvider{lookupEnv: mapLookup(map[string]string{"GOVAULT_OIDC_ASSERTION": assertion})}
 	s := providerSchema(t)
-	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "OIDC_ASSERTION", nil)}
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "GOVAULT_OIDC_ASSERTION", nil)}
 	var response provider.ConfigureResponse
 	p.Configure(context.Background(), request, &response)
 	client, ok := response.EphemeralResourceData.(secretReader)
@@ -454,7 +478,7 @@ func TestConfigureClassifiesLocalAssertionSourceFailure(t *testing.T) {
 	defer server.Close()
 	p := &goVaultProvider{lookupEnv: mapLookup(nil)}
 	s := providerSchema(t)
-	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "MISSING_ASSERTION", nil)}
+	request := provider.ConfigureRequest{Config: configFor(s, server.URL, workloadAuth, nil, writeServerCA(t, server), "role-a", "GOVAULT_MISSING_ASSERTION", nil)}
 	var response provider.ConfigureResponse
 	p.Configure(context.Background(), request, &response)
 	if !hasDiagnosticSummary(response.Diagnostics.Errors(), "Invalid workload assertion source") || hasDiagnosticSummary(response.Diagnostics.Errors(), "GoVault workload authentication failed") {

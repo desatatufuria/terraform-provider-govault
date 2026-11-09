@@ -19,6 +19,9 @@ func readWorkloadAssertion(config providerModel, lookupEnv func(string) (string,
 		if strings.TrimSpace(name) == "" {
 			return "", fmt.Errorf("workload assertion environment selector is empty")
 		}
+		if !validEnvSelector(name) {
+			return "", fmt.Errorf("workload_assertion_env %s", envSelectorRule)
+		}
 		value, ok := lookupEnv(name)
 		if !ok {
 			return "", fmt.Errorf("selected workload assertion environment variable is not set")

@@ -123,6 +123,15 @@ defaults to `GOVAULT_TOKEN` when omitted. There is deliberately no inline token
 argument and no fallback to workload authentication or another environment
 variable.
 
+The name in `token_env` and in `workload_assertion_env` must start with
+`GOVAULT_` and use only upper case letters, digits and underscores
+(`^GOVAULT_[A-Z0-9_]+$`). The provider refuses any other name before it reads
+the environment, because the selected value is sent to the configured
+`address`: a configuration written by someone who does not control the runner
+must not be able to point the provider at a cloud key or a CI token. Provider
+configuration is still as trusted as the environment of the runner that applies
+it.
+
 ## TLS and authority
 
 Provider configuration requires HTTPS, performs normal certificate and hostname

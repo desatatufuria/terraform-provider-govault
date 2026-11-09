@@ -47,7 +47,7 @@ provider "govault" {
 
 - `approle_namespace` (String) AppRole mode only: optional GoVault namespace containing the AppRole.
 - `ca_cert_file` (String) Optional path to a PEM-encoded CA certificate file used to verify GoVault.
-- `token_env` (String) Token mode only: name of the environment variable that supplies the GoVault token. This is a selector, not the token value.
-- `workload_assertion_env` (String) Workload mode only: name of the environment variable supplying the assertion.
+- `token_env` (String) Token mode only: name of the environment variable that supplies the GoVault token. This is a selector, not the token value. The name must start with GOVAULT_.
+- `workload_assertion_env` (String) Workload mode only: name of the environment variable supplying the assertion. The name must start with GOVAULT_.
 - `workload_assertion_file` (String) Workload mode only: path to a protected regular assertion file on Unix-like systems. File assertions are unsupported on Windows.
 - `workload_role_ref` (String) Workload mode only: server-defined GoVault workload role reference.
