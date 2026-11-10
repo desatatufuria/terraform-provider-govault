@@ -123,11 +123,23 @@ defaults to `GOVAULT_TOKEN` when omitted. There is deliberately no inline token
 argument and no fallback to workload authentication or another environment
 variable.
 
+The name in `token_env` and in `workload_assertion_env` must start with
+`GOVAULT_` and use only upper case letters, digits and underscores
+(`^GOVAULT_[A-Z0-9_]+$`). The provider refuses any other name before it reads
+the environment, because the selected value is sent to the configured
+`address`: a configuration written by someone who does not control the runner
+must not be able to point the provider at a cloud key or a CI token. Provider
+configuration is still as trusted as the environment of the runner that applies
+it.
+
 ## TLS and authority
 
 Provider configuration requires HTTPS, performs normal certificate and hostname
 verification, and may add the PEM certificates selected by `ca_cert_file` to
-the system trust roots. Requests use a 30-second timeout and honor Terraform
+the system trust roots (the file is added to them, not substituted for them).
+The file must be a regular file of at most 1 MiB; a FIFO, a device or a larger
+file is refused before it is read, so a configuration cannot hang the runner.
+Requests use a 30-second timeout and honor Terraform
 cancellation. Token authentication obtains its namespace from
 `GET /auth/whoami`; workload and AppRole authentication obtain it from their
 login responses. In AppRole mode, `approle_namespace` locates the role but the

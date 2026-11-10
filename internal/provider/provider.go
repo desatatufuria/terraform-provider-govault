@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 
 	govaultclient "github.com/desatatufuria/terraform-provider-govault/internal/client"
@@ -29,6 +30,17 @@ const (
 	workloadAuth     = "workload"
 	appRoleAuth      = "approle"
 )
+
+// envSelectorPattern is the only shape of environment variable name that
+// token_env and workload_assertion_env may select. The provider configuration
+// can be written by someone who does not control the runner, so a selector must
+// never reach a variable that GoVault did not put there (cloud keys, CI tokens):
+// the selected value is sent to the configured address.
+var envSelectorPattern = regexp.MustCompile(`^GOVAULT_[A-Z0-9_]+$`)
+
+const envSelectorRule = "must start with GOVAULT_ and use only upper case letters, digits and underscores"
+
+func validEnvSelector(name string) bool { return envSelectorPattern.MatchString(name) }
 
 var (
 	_ provider.Provider                       = (*goVaultProvider)(nil)
@@ -82,21 +94,25 @@ func (p *goVaultProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				},
 			},
 			"token_env": schema.StringAttribute{
-				Description: "Token mode only: name of the environment variable that supplies the GoVault token. This is a selector, not the token value.",
+				Description: "Token mode only: name of the environment variable that supplies the GoVault token. This is a selector, not the token value. The name must start with GOVAULT_.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
+					stringvalidator.RegexMatches(envSelectorPattern, "must start with GOVAULT_ and use only upper case letters, digits and underscores"),
 				},
 			},
-			"workload_role_ref":       schema.StringAttribute{Optional: true, Description: "Workload mode only: server-defined GoVault workload role reference."},
-			"workload_assertion_env":  schema.StringAttribute{Optional: true, Description: "Workload mode only: name of the environment variable supplying the assertion."},
+			"workload_role_ref": schema.StringAttribute{Optional: true, Description: "Workload mode only: server-defined GoVault workload role reference."},
+			"workload_assertion_env": schema.StringAttribute{
+				Optional: true, Description: "Workload mode only: name of the environment variable supplying the assertion. The name must start with GOVAULT_.",
+				Validators: []validator.String{stringvalidator.RegexMatches(envSelectorPattern, "must start with GOVAULT_ and use only upper case letters, digits and underscores")},
+			},
 			"workload_assertion_file": schema.StringAttribute{Optional: true, Description: "Workload mode only: path to a protected regular assertion file on Unix-like systems. File assertions are unsupported on Windows."},
 			"approle_namespace": schema.StringAttribute{
 				Optional: true, Description: "AppRole mode only: optional GoVault namespace containing the AppRole.",
 				Validators: []validator.String{stringvalidator.LengthAtLeast(1)},
 			},
 			"ca_cert_file": schema.StringAttribute{
-				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault.",
+				Description: "Optional path to a PEM-encoded CA certificate file used to verify GoVault. It must be a regular file of at most 1 MiB and it is added to the system trust roots, not substituted for them.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
@@ -161,6 +177,10 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 			diagnostics.AddError("Missing token environment selector", "The provider token_env must name exactly one environment variable.")
 			return nil
 		}
+		if !validEnvSelector(tokenEnv) {
+			diagnostics.AddError("Invalid token environment selector", "The provider token_env "+envSelectorRule+".")
+			return nil
+		}
 		token, ok := lookupEnv(tokenEnv)
 		if !ok || strings.TrimSpace(token) == "" {
 			diagnostics.AddError("Missing GoVault token", "The environment variable selected by token_env is not set or is empty.")
@@ -219,6 +239,10 @@ func (p *goVaultProvider) configureClient(ctx context.Context, config providerMo
 	}
 	if config.WorkloadAssertionEnv.IsNull() == config.WorkloadAssertionFile.IsNull() {
 		diagnostics.AddError("Invalid workload assertion source", "Configure exactly one workload assertion source.")
+		return nil
+	}
+	if !config.WorkloadAssertionEnv.IsNull() && strings.TrimSpace(config.WorkloadAssertionEnv.ValueString()) != "" && !validEnvSelector(config.WorkloadAssertionEnv.ValueString()) {
+		diagnostics.AddError("Invalid workload assertion environment selector", "The provider workload_assertion_env "+envSelectorRule+".")
 		return nil
 	}
 	client, err := govaultclient.NewProtocolClient(govaultclient.Config{Address: config.Address.ValueString(), CACertFile: config.CACertFile.ValueString()})
